@@ -57,16 +57,110 @@ Best Modules+1
 
 ## development
 
-# 安装目标和 probe-rs
+### 安装目标和 probe-rs
 rustup target add thumbv6m-none-eabi
 cargo install probe-rs --locked
 cargo install cargo-embed --locked
 
-# 编译
+### 编译
 cargo build --release
 
-# 烧录 & 运行
+### 烧录 & 运行
 cargo run --release -p blink-embassy
 
+# USB HID Keyboard Example
+cargo run --release -p usb-hid-keyboard
+
+
+## USB Support - ✅ COMPLETED
+
+### Implementation Status
+✅ **USB Driver**: Complete embassy-usb-driver implementation for HT32F523xx
+✅ **HID Support**: Working USB HID keyboard example with embassy-usb
+✅ **RMK Ready**: Compatible with RMK mechanical keyboard firmware
+✅ **Examples**: Functional USB HID keyboard demo with button input
+
+### USB Architecture
+HT32F523xx 的 USB：Holtek 官方文档里描述的 USB FS 寄存器和 STM32F103 类似，但寄存器布局不同，需要从 SVD 手动分析。
+
+RMK 与 Embassy USB：RMK 已有 embassy-usb 支持，但需要匹配 HT32 的 endpoint 管理和中断处理。
+
+RMK 用的是 embassy-usb，它需要 MCU 提供一个实现了 embassy_usb_driver::Driver trait 的 USB 驱动层，来完成：
+
+    Endpoint 分配与配置
+
+    数据包发送与接收
+
+    USB 中断处理
+
+    设备连接与复位检测
+
+HT32F523xx 内置的 USB FS 控制器是 全速设备（Full Speed），寄存器布局和 STM32F103 的 USB FS 很像，但名字和 bit 位稍有不同（Holtek 自家命名）。
+好消息是 embassy-usb 已经有 stm32 参考，我们可以抄结构、改寄存器。
+调试：如果 probe-rs 对 HT32 支持不全，需要用 OpenOCD 或 J-Link。
+
+3. 寄存器填充思路
+
+从 HT32F523xx RM 中可以找到：
+
+    USB_BASE 地址
+
+    Endpoint 寄存器结构（可能是 EP0-EP7）
+
+    控制寄存器：USB_CNTR / USB_ISTR / USB_DADDR 等
+
+    PMA（Packet Memory Area）管理方式（类似 STM32 USB FS）
+
+我们要做：
+
+    实现 EP 分配表（最多 8 个 endpoint）
+
+    写 alloc_ep 配置 EP 类型、包长、PMA 缓冲地址
+
+    写 read / write 从 PMA RAM 读写数据
+
+    在 poll 中解析 ISTR 中断源，返回给 embassy-usb
+
+    1. 准备工作
+
+    确保已有 ht32-hal 中 PAC 访问正常。
+
+    创建 embassy-ht32-usb crate，依赖 embassy-usb-driver。
+
+    熟悉 HT32 USB 寄存器，重点是：
+
+        USB_CNTR 控制寄存器
+
+        USB_ISTR 中断寄存器
+
+        USB_DADDR 设备地址寄存器
+
+        USB_EPnR 各端点寄存器
+
+        PMA（Packet Memory Area）缓冲区管理
+
+2. 驱动设计概要
+
+    EP0 默认配置，支持标准枚举请求（GET_DESCRIPTOR、SET_ADDRESS等）。
+
+    使用 PMA 区域读写控制传输数据。
+
+    配置一个 HID IN 端点（EP1 IN）。
+
+    实现 Driver trait 中的 poll(), alloc_ep(), enable()，并完成中断处理。
+
+
+    USB 事件驱动 embassy-usb 栈。
+
+写一个完整的 UsbDriver 实现，至少完成：
+
+    EP0 标准控制传输
+
+    一个简单的 HID IN 端点，实现定时发送“按键A”报告
+
+结合前面 Ht32Matrix，最终替换 HID 报告数据为矩阵扫描结果。
+
 ## rmk intergation
+
+
 

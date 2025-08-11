@@ -5,6 +5,7 @@ members = [
     "bsp",
     "examples/blink-embassy",
     "examples/serial-echo",
+    "examples/usb-hid-keyboard",
 ]
 resolver = "2"
 
@@ -19,9 +20,12 @@ embassy-executor = "0.6"
 embassy-time = "0.3"
 embassy-sync = "0.6"
 embassy-futures = "0.1"
+embassy-usb = "0.3"
+embassy-usb-driver = "0.1"
 defmt = "0.3"
 defmt-rtt = "0.4"
 panic-probe = "0.3"
+usbd-hid = "0.8"
 
 [profile.dev]
 debug = 2

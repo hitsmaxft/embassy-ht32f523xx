@@ -13,9 +13,11 @@ embassy-executor = { workspace = true }
 embassy-time = { workspace = true }
 embassy-sync = { workspace = true }
 embassy-futures = { workspace = true }
+embassy-usb-driver = { workspace = true }
 ht32-hal = { path = "../ht32-hal" }
 ht32f523x2 = { workspace = true }
 
 [features]
 default = []
 rt = ["ht32f523x2/rt"]
+usb = []

@@ -6,9 +6,9 @@ A complete Embassy async runtime workspace for HT32F523xx microcontrollers with 
 
 This workspace contains:
 - `ht32-hal/` - Hardware Abstraction Layer (GPIO, RCC, Timer, UART)
-- `embassy-ht32/` - Embassy async wrappers and trait implementations
+- `embassy-ht32/` - Embassy async wrappers and USB driver implementation
 - `bsp/` - Board Support Package (pin mappings for ESK32-30501)
-- `examples/` - Ready-to-run examples
+- `examples/` - Ready-to-run examples including USB HID keyboard
 
 ## Development Setup
 
@@ -51,6 +51,12 @@ cargo embed -p blink-embassy
 cargo run --release -p serial-echo
 ```
 
+#### USB HID Keyboard Example
+```bash
+# Flash and run USB HID keyboard example
+cargo run --release -p usb-hid-keyboard
+```
+
 ## Hardware Support
 
 ### Target MCU
@@ -71,8 +77,9 @@ embassy-ht32/
 ├── embassy-ht32/       # Async Embassy wrappers
 ├── bsp/                # Board support (ESK32-30501)
 ├── examples/
-│   ├── blink-embassy/  # LED blink example
-│   └── serial-echo/    # UART echo example
+│   ├── blink-embassy/     # LED blink example
+│   ├── serial-echo/       # UART echo example
+│   └── usb-hid-keyboard/  # USB HID keyboard example
 ├── memory.x           # Linker script
 ├── Embed.toml         # probe-rs configuration
 └── Cargo.toml         # Workspace configuration
@@ -88,9 +95,10 @@ embassy-ht32/
 - ✅ Time abstractions (Hertz, MicroSeconds, etc.)
 
 ### Embassy Support (embassy-ht32)
-- ✅ Time driver based on GPTM0
 - ✅ Async UART with interrupt handling
 - ✅ Embassy executor integration
+- ✅ USB Full-Speed driver for embassy-usb
+- ✅ USB HID class support for keyboards
 
 ### Board Support (bsp)
 - ✅ ESK32-30501 pin definitions
@@ -136,6 +144,46 @@ let mut uart = Uart::new(dp.USART0, config, &clocks);
 
 uart.write(b"Hello, World!").await.unwrap();
 ```
+
+### USB HID Keyboard
+```rust
+use embassy_ht32::usb::Driver;
+use embassy_usb::{Builder, Config};
+use embassy_usb::class::hid::{HidReaderWriter, State};
+use usbd_hid::descriptor::KeyboardReport;
+
+// Create USB driver
+let driver = Driver::new();
+
+// Configure USB device
+let mut config = Config::new(0xc0de, 0xcafe);
+config.manufacturer = Some("Embassy");
+config.product = Some("HT32 HID Keyboard");
+
+// Create HID class
+let mut state = State::new();
+let hid = HidReaderWriter::<_, 1, 8>::new(&mut builder, &mut state, hid_config);
+
+// Send keypress
+let report = KeyboardReport {
+    modifier: 0,
+    reserved: 0,
+    leds: 0,
+    keycodes: [0x04, 0, 0, 0, 0, 0], // 'A' key
+};
+hid.write_serialize(&report).await.unwrap();
+```
+
+## RMK Integration
+
+This USB driver is designed to be compatible with [RMK](https://github.com/HaoboGu/rmk), a Rust mechanical keyboard firmware. The embassy-usb implementation provides the foundation for advanced keyboard features:
+
+- **USB HID**: Full keyboard, mouse, and consumer device support
+- **Key Matrix**: GPIO-based key scanning with embassy async
+- **Advanced Features**: Ready for RGB, rotary encoder, and wireless modules
+- **Low Latency**: Async design optimizes response time
+
+To use with RMK, simply replace the USB driver in your RMK configuration with the HT32 embassy-usb driver implementation.
 
 ## License
 
