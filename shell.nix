@@ -19,6 +19,7 @@ pkgs.mkShell {
     pkgs.rustfmt
     pkgs.openocd-rp2040
     pkgs.probe-rs-tools
+    pkgs.cargo-make
     # pkgs.pre-commit
     # pkgs.rustPackages.clippy
   ] ++ systemBuildInputs;

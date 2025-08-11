@@ -65,8 +65,12 @@ impl Serial<Usart0> {
         Serial {
             usart,
             pins: (
-                Tx { _usart: core::marker::PhantomData },
-                Rx { _usart: core::marker::PhantomData },
+                Tx {
+                    _usart: core::marker::PhantomData,
+                },
+                Rx {
+                    _usart: core::marker::PhantomData,
+                },
             ),
         }
     }
@@ -81,8 +85,12 @@ impl Serial<Usart1> {
         Serial {
             usart,
             pins: (
-                Tx { _usart: core::marker::PhantomData },
-                Rx { _usart: core::marker::PhantomData },
+                Tx {
+                    _usart: core::marker::PhantomData,
+                },
+                Rx {
+                    _usart: core::marker::PhantomData,
+                },
             ),
         }
     }

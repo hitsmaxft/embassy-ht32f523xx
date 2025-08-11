@@ -1,6 +1,6 @@
 use crate::pac::{Gptm0, Gptm1};
 use crate::rcc::Clocks;
-use crate::time::{MicroSeconds};
+use crate::time::MicroSeconds;
 use embedded_hal::delay::DelayNs;
 
 pub struct Timer<TIM> {
@@ -13,7 +13,7 @@ impl Timer<Gptm0> {
         Timer { tim, clocks }
     }
 
-    pub fn start_count_down<T>(&mut self, _timeout: T) 
+    pub fn start_count_down<T>(&mut self, _timeout: T)
     where
         T: Into<MicroSeconds>,
     {
@@ -29,7 +29,7 @@ impl Timer<Gptm1> {
         Timer { tim, clocks }
     }
 
-    pub fn start_count_down<T>(&mut self, _timeout: T) 
+    pub fn start_count_down<T>(&mut self, _timeout: T)
     where
         T: Into<MicroSeconds>,
     {

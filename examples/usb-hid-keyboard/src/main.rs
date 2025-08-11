@@ -9,27 +9,40 @@ use embassy_usb::class::hid::{HidReaderWriter, ReportId, RequestHandler, State};
 use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Config};
 use embedded_hal::digital::InputPin;
-use ht32_bsp::Board;
+use ht32_hal::gpio::{GpioExt, Input, Pin};
+use ht32_hal::pac::Gpiob as GPIO_B;
 use ht32_hal::prelude::*;
 use ht32_hal::rcc::RccExt;
 use panic_probe as _;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
+pub struct Board {
+    pub user_button: Pin<'B', 5, Input>,
+}
+
+impl Board {
+    pub fn new() -> Self {
+        let gpio_b = unsafe { GPIO_B::steal() }.split();
+
+        Self {
+            user_button: gpio_b.pb5.into_floating_input(),
+        }
+    }
+}
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     info!("Starting USB HID Keyboard example");
 
     let dp = unsafe { ht32_bsp::pac::Peripherals::steal() };
-    
+
     let rcc = dp.ckcu.constrain();
-    let _clocks = rcc.configure()
-        .hclk(48.mhz())
-        .freeze();
+    let _clocks = rcc.configure().hclk(48.mhz()).freeze();
 
     embassy_ht32::init();
 
+    // col 0, may be esc
     let board = Board::new();
-    let button = board.user_button;
+    let button: Pin<'B', 5, Input> = board.user_button;
 
     // Create the USB driver
     let _usb_config = embassy_ht32::usb::Config::default();
@@ -109,8 +122,10 @@ impl RequestHandler for MyRequestHandler {
     }
 }
 
-async fn keyboard_task<'a, T>(mut hid: HidReaderWriter<'a, embassy_ht32::usb::Driver<'a>, 1, 8>, mut button: T)
-where
+async fn keyboard_task<'a, T>(
+    mut hid: HidReaderWriter<'a, embassy_ht32::usb::Driver<'a>, 1, 8>,
+    mut button: T,
+) where
     T: InputPin,
 {
     info!("Starting keyboard task");
@@ -135,18 +150,18 @@ where
             // Button pressed - send 'A' key
             info!("Button pressed - sending 'A'");
             report.keycodes[0] = 0x04; // HID keycode for 'A'
-            
+
             match hid.write_serialize(&report).await {
-                Ok(()) => {},
+                Ok(()) => {}
                 Err(e) => error!("Failed to send HID report: {:?}", e),
             }
-            
+
             Timer::after(Duration::from_millis(10)).await;
-            
+
             // Send key release
             report.keycodes[0] = 0;
             match hid.write_serialize(&report).await {
-                Ok(()) => {},
+                Ok(()) => {}
                 Err(e) => error!("Failed to send key release: {:?}", e),
             }
         }
@@ -155,3 +170,5 @@ where
         Timer::after(Duration::from_millis(10)).await;
     }
 }
+
+mod test {}

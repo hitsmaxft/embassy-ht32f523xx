@@ -7,9 +7,7 @@ pub trait RccExt {
 
 impl RccExt for Ckcu {
     fn constrain(self) -> Rcc {
-        Rcc {
-            ckcu: self,
-        }
+        Rcc { ckcu: self }
     }
 }
 
@@ -32,7 +30,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn hclk<F>(mut self, freq: F) -> Self 
+    pub fn hclk<F>(mut self, freq: F) -> Self
     where
         F: Into<Hertz>,
     {

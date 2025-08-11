@@ -1,5 +1,5 @@
 use crate::pac::{Gpioa, Gpiob, Gpioc};
-use embedded_hal::digital::{InputPin, OutputPin, StatefulOutputPin, ErrorType};
+use embedded_hal::digital::{ErrorType, InputPin, OutputPin, StatefulOutputPin};
 
 pub trait GpioExt {
     type Parts;
@@ -24,11 +24,15 @@ impl<const P: char, const N: u8, MODE> ErrorType for Pin<P, N, MODE> {
 
 impl<const P: char, const N: u8, MODE> Pin<P, N, MODE> {
     pub fn into_push_pull_output(self) -> Pin<P, N, Output> {
-        Pin { _mode: core::marker::PhantomData }
+        Pin {
+            _mode: core::marker::PhantomData,
+        }
     }
 
     pub fn into_floating_input(self) -> Pin<P, N, Input> {
-        Pin { _mode: core::marker::PhantomData }
+        Pin {
+            _mode: core::marker::PhantomData,
+        }
     }
 }
 
