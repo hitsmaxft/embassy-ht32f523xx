@@ -1,0 +1,33 @@
+[workspace]
+members = [
+    "ht32-hal",
+    "embassy-ht32", 
+    "bsp",
+    "examples/blink-embassy",
+    "examples/serial-echo",
+]
+resolver = "2"
+
+[workspace.dependencies]
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+embedded-hal = "1.0"
+embedded-hal-nb = "1.0"
+nb = "1.0"
+ht32f523x2 = "0.5"
+embassy-executor = "0.6"
+embassy-time = "0.3"
+embassy-sync = "0.6"
+embassy-futures = "0.1"
+defmt = "0.3"
+defmt-rtt = "0.4"
+panic-probe = "0.3"
+
+[profile.dev]
+debug = 2
+lto = false
+
+[profile.release]
+debug = 2
+lto = true
+opt-level = "s"

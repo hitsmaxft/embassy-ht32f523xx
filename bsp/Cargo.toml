@@ -1,0 +1,18 @@
+[package]
+name = "ht32-bsp"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "Board Support Package for HT32F523xx development boards"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+cortex-m = { workspace = true }
+embedded-hal = { workspace = true }
+ht32-hal = { path = "../ht32-hal" }
+ht32f523x2 = { workspace = true }
+
+[features]
+default = ["esk32-30501"]
+esk32-30501 = []
+rt = ["ht32f523x2/rt"]

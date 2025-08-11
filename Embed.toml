@@ -1,0 +1,20 @@
+[default.probe]
+protocol = "Swd"
+
+[default.flashing]
+enabled = true
+halt_afterwards = false
+
+[default.reset]
+enabled = true
+halt_afterwards = false
+
+[default.general]
+chip = "HT32F52352"
+
+[default.rtt]
+enabled = true
+up_mode = "NoBlockSkip"
+up_channels = [
+    { up = 0, name = "defmt" },
+]

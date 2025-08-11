@@ -1,0 +1,21 @@
+[package]
+name = "embassy-ht32"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "Embassy async runtime support for HT32F523xx microcontrollers"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+cortex-m = { workspace = true }
+embedded-hal = { workspace = true }
+embassy-executor = { workspace = true }
+embassy-time = { workspace = true }
+embassy-sync = { workspace = true }
+embassy-futures = { workspace = true }
+ht32-hal = { path = "../ht32-hal" }
+ht32f523x2 = { workspace = true }
+
+[features]
+default = []
+rt = ["ht32f523x2/rt"]
