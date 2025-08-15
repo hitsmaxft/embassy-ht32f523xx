@@ -2,7 +2,17 @@
 
 A complete Embassy async runtime workspace for HT32F523xx microcontrollers with probe-rs support.
 
+It is intended to provide a foundation for async programming on HT32F523xx MCUs using the Embassy framework.
+
+## WARNING
+
+This is Vibe Coding project Currently
+
+!!! Currently, it's a draft project and is not yet ready for production use. 
+
+
 ## Overview
+
 
 This workspace contains:
 - `ht32-hal/` - Hardware Abstraction Layer (GPIO, RCC, Timer, UART)
