@@ -2,7 +2,7 @@
 name = "embassy-ht32"
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["hitsmaxft <mfthits@gmail.com>"]
 description = "Embassy async runtime support for HT32F523xx microcontrollers"
 license = "MIT OR Apache-2.0"
 

@@ -2,7 +2,7 @@
 name = "serial-echo"
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["hitsmaxft <mfthits@gmail.com>"]
 
 [[bin]]
 name = "echo"
