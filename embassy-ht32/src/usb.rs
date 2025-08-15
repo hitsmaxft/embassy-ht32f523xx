@@ -60,6 +60,7 @@ impl<'d> embassy_usb_driver::Driver<'d> for Driver<'d> {
     fn alloc_endpoint_in(
         &mut self,
         ep_type: EndpointType,
+        ep_addr: Option<EndpointAddress>,
         max_packet_size: u16,
         _interval: u8,
     ) -> Result<Self::EndpointIn, EndpointAllocError> {
@@ -68,7 +69,7 @@ impl<'d> embassy_usb_driver::Driver<'d> for Driver<'d> {
         }
         self.alloc_in.store(true, Ordering::Relaxed);
 
-        let addr = EndpointAddress::from_parts(1, Direction::In);
+        let addr = ep_addr.unwrap_or(EndpointAddress::from_parts(1, Direction::In));
         
         Ok(Endpoint {
             _phantom: PhantomData,
@@ -85,6 +86,7 @@ impl<'d> embassy_usb_driver::Driver<'d> for Driver<'d> {
     fn alloc_endpoint_out(
         &mut self,
         ep_type: EndpointType,
+        ep_addr: Option<EndpointAddress>,
         max_packet_size: u16,
         _interval: u8,
     ) -> Result<Self::EndpointOut, EndpointAllocError> {
@@ -93,7 +95,7 @@ impl<'d> embassy_usb_driver::Driver<'d> for Driver<'d> {
         }
         self.alloc_out.store(true, Ordering::Relaxed);
 
-        let addr = EndpointAddress::from_parts(1, Direction::Out);
+        let addr = ep_addr.unwrap_or(EndpointAddress::from_parts(1, Direction::Out));
         
         Ok(Endpoint {
             _phantom: PhantomData,
