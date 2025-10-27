@@ -1,7 +1,7 @@
 #![no_std]
 
-pub use ht32_hal as hal;
-pub use ht32f523x2 as pac;
+pub use embassy_ht32f523xx as hal;
+pub use embassy_ht32f523xx::pac;
 
 #[cfg(feature = "esk32-30501")]
 pub mod esk32_30501;

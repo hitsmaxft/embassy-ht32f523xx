@@ -3,172 +3,162 @@
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
 use embassy_time::{Duration, Timer};
-use embassy_usb::class::hid::{HidReaderWriter, ReportId, RequestHandler, State};
-use embassy_usb::control::OutResponse;
-use embassy_usb::{Builder, Config};
+use embassy_usb::class::hid::{HidWriter, State, Config};
+use embassy_usb::driver::EndpointError;
+use embassy_usb::Builder;
 use embedded_hal::digital::InputPin;
-use ht32_hal::gpio::{GpioExt, Input, Pin};
-use ht32_hal::pac::Gpiob as GPIO_B;
-use ht32_hal::prelude::*;
-use ht32_hal::rcc::RccExt;
-use panic_probe as _;
+use embassy_ht32f523xx::gpio::{Pin, mode};
+use embassy_ht32f523xx::usb::{Driver, Config as UsbConfig};
+use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
+use panic_probe as _;
 
-pub struct Board {
-    pub user_button: Pin<'B', 5, Input>,
-}
-
-impl Board {
-    pub fn new() -> Self {
-        let gpio_b = unsafe { GPIO_B::steal() }.split();
-
-        Self {
-            user_button: gpio_b.pb5.into_floating_input(),
-        }
-    }
-}
+use ht32_bsp::Board;
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     info!("Starting USB HID Keyboard example");
 
-    let dp = unsafe { ht32_bsp::pac::Peripherals::steal() };
+    // Initialize Embassy
+    let config = embassy_ht32f523xx::Config::default();
+    let p = embassy_ht32f523xx::init(config);
 
-    let rcc = dp.ckcu.constrain();
-    let _clocks = rcc.configure().hclk(48.mhz()).freeze();
-
-    embassy_ht32::init();
-
-    // col 0, may be esc
+    // Initialize board
     let board = Board::new();
-    let button: Pin<'B', 5, Input> = board.user_button;
+    let button = board.user_button;
+
+    info!("Board initialized, setting up USB HID");
 
     // Create the USB driver
-    let _usb_config = embassy_ht32::usb::Config::default();
-    let driver = embassy_ht32::usb::Driver::new();
+    let usb_config = UsbConfig::default();
+    let driver = Driver::new(p.USB, usb_config);
 
     // Create embassy-usb Config
-    let mut config = Config::new(0xc0de, 0xcafe);
+    let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
     config.manufacturer = Some("Embassy");
     config.product = Some("HT32 HID Keyboard");
     config.serial_number = Some("12345678");
     config.max_power = 100;
     config.max_packet_size_0 = 64;
 
-    // Device descriptor
-    config.device_class = 0x00;
-    config.device_sub_class = 0x00;
-    config.device_protocol = 0x00;
-    config.composite_with_iads = true;
+    // Required buffers for USB
+    static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+    static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+    static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+    static STATE: StaticCell<State> = StaticCell::new();
 
-    // Create embassy-usb DeviceBuilder
-    let mut device_descriptor = [0; 256];
-    let mut config_descriptor = [0; 256];
-    let mut bos_descriptor = [0; 256];
-    let mut control_buf = [0; 64];
+    let config_descriptor = CONFIG_DESCRIPTOR.init([0; 256]);
+    let bos_descriptor = BOS_DESCRIPTOR.init([0; 256]);
+    let control_buf = CONTROL_BUF.init([0; 64]);
+    let state = STATE.init(State::new());
 
-    let mut state = State::new();
-
+    // Create USB builder
     let mut builder = Builder::new(
         driver,
         config,
-        &mut device_descriptor,
-        &mut config_descriptor,
-        &mut bos_descriptor,
-        &mut control_buf,
+        config_descriptor,
+        bos_descriptor,
+        &mut [], // no msos descriptors
+        control_buf,
     );
 
-    // Create HID Class
-    let config = embassy_usb::class::hid::Config {
+    // Create HID class with keyboard report descriptor
+    let hid_config = Config {
         report_descriptor: KeyboardReport::desc(),
         request_handler: None,
         poll_ms: 60,
-        max_packet_size: 64,
+        max_packet_size: 8,
     };
 
-    let hid = HidReaderWriter::<_, 1, 8>::new(&mut builder, &mut state, config);
+    let hid = HidWriter::<_, 8>::new(&mut builder, state, hid_config);
 
     // Build the USB device
     let mut usb = builder.build();
 
-    // Run the USB device and keyboard task concurrently
-    let usb_fut = usb.run();
-    let keyboard_fut = keyboard_task(hid, button);
+    // Start the USB task in the background
+    let usb_future = usb.run();
 
-    join(usb_fut, keyboard_fut).await;
+    // Start the HID keyboard task
+    let hid_future = hid_keyboard_task(hid, button);
+
+    info!("Starting USB device and HID keyboard tasks");
+
+    // Run both tasks concurrently
+    embassy_futures::join::join(usb_future, hid_future).await;
 }
 
-struct MyRequestHandler {}
-
-impl RequestHandler for MyRequestHandler {
-    fn get_report(&mut self, id: ReportId, _buf: &mut [u8]) -> Option<usize> {
-        info!("Get report for {:?}", id);
-        None
-    }
-
-    fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
-        info!("Set report for {:?}: {=[u8]}", id, data);
-        OutResponse::Accepted
-    }
-
-    fn set_idle_ms(&mut self, id: Option<ReportId>, dur: u32) {
-        info!("Set idle rate for {:?} to {}ms", id, dur);
-    }
-
-    fn get_idle_ms(&mut self, id: Option<ReportId>) -> Option<u32> {
-        info!("Get idle rate for {:?}", id);
-        None
-    }
-}
-
-async fn keyboard_task<'a, T>(
-    mut hid: HidReaderWriter<'a, embassy_ht32::usb::Driver<'a>, 1, 8>,
-    mut button: T,
-) where
-    T: InputPin,
-{
-    info!("Starting keyboard task");
+async fn hid_keyboard_task<'a>(mut hid: HidWriter<'a, Driver<'a>, 8>, mut button: Pin<'B', 12, mode::Input>) {
+    info!("Starting HID keyboard task");
 
     let mut last_button_state = false;
-    let mut report = KeyboardReport {
-        modifier: 0,
-        reserved: 0,
-        leds: 0,
-        keycodes: [0; 6],
-    };
+    let mut button_count = 0u32;
+
+    info!("Press the user button (PB12) to send HID keyboard reports");
+    info!("Each button press will send 'Hello' via USB HID");
 
     loop {
         // Read button state
         let button_pressed = match button.is_low() {
             Ok(pressed) => pressed,
-            Err(_) => false,
+            Err(_) => {
+                error!("Failed to read button state");
+                false
+            }
         };
 
-        // Detect button press/release
+        // Detect button press
         if button_pressed && !last_button_state {
-            // Button pressed - send 'A' key
-            info!("Button pressed - sending 'A'");
-            report.keycodes[0] = 0x04; // HID keycode for 'A'
+            button_count += 1;
+            info!("Button pressed! Count: {} - Sending HID report", button_count);
 
-            match hid.write_serialize(&report).await {
-                Ok(()) => {}
-                Err(e) => error!("Failed to send HID report: {:?}", e),
+            // Send "Hello" via HID keyboard
+            if let Err(_e) = send_hello_via_hid(&mut hid).await {
+                error!("Failed to send HID report");
+            } else {
+                info!("HID report sent successfully");
             }
-
-            Timer::after(Duration::from_millis(10)).await;
-
-            // Send key release
-            report.keycodes[0] = 0;
-            match hid.write_serialize(&report).await {
-                Ok(()) => {}
-                Err(e) => error!("Failed to send key release: {:?}", e),
-            }
+        } else if !button_pressed && last_button_state {
+            info!("Button released");
         }
 
         last_button_state = button_pressed;
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(Duration::from_millis(50)).await;
     }
 }
 
-mod test {}
+/// Send "Hello" string via HID keyboard reports
+async fn send_hello_via_hid<'a>(hid: &mut HidWriter<'a, Driver<'a>, 8>) -> Result<(), EndpointError> {
+    let hello_chars = [
+        0x0B, // H
+        0x08, // E
+        0x0F, // L
+        0x0F, // L
+        0x12, // O
+    ];
+
+    for &keycode in &hello_chars {
+        // Key press
+        let report = KeyboardReport {
+            modifier: 0,
+            reserved: 0,
+            leds: 0,
+            keycodes: [keycode, 0, 0, 0, 0, 0],
+        };
+
+        hid.write_serialize(&report).await?;
+        Timer::after(Duration::from_millis(50)).await;
+
+        // Key release
+        let release_report = KeyboardReport {
+            modifier: 0,
+            reserved: 0,
+            leds: 0,
+            keycodes: [0, 0, 0, 0, 0, 0],
+        };
+
+        hid.write_serialize(&release_report).await?;
+        Timer::after(Duration::from_millis(50)).await;
+    }
+
+    Ok(())
+}

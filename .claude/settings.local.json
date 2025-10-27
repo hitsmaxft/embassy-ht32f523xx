@@ -4,7 +4,11 @@
       "Bash(mkdir:*)",
       "Bash(cargo tree:*)",
       "Bash(cargo search:*)",
-      "Bash(cargo:*)"
+      "Bash(cargo:*)",
+      "Bash(tree:*)",
+      "Bash(cat:*)",
+      "Bash(find:*)",
+      "Bash(RUSTFLAGS=\"-C link-arg=--nmagic -C link-arg=-Tlink.x\" cargo build:*)"
     ],
     "deny": []
   }

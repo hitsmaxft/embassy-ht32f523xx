@@ -1,4 +1,4 @@
-use embassy_ht32::hal::gpio::{Pin, Input, Output};
+use embassy_ht32f523xx::gpio::{Pin, mode};
 use embedded_hal::digital::OutputPin;
 
 macro_rules! config_matrix_pins_ht32 {

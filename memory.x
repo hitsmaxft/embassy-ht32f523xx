@@ -1,9 +1,0 @@
-MEMORY
-{
-  /* NOTE 1 K = 1 KiBi = 1024 bytes */
-  /* HT32F52352: 128K Flash, 16K SRAM
- ht32f52342: 64k flash ， 8k sram
- */
-  FLASH : ORIGIN = 0x00000000, LENGTH = 128K
-  RAM : ORIGIN = 0x20000000, LENGTH = 16K
-}
