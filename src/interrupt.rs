@@ -11,7 +11,8 @@ pub use crate::pac::Interrupt;
 
 // Import cortex_m_rt for interrupt handlers
 #[cfg(feature = "rt")]
-use cortex_m_rt::interrupt;
+// TODO: Will be used when implementing actual interrupt handlers
+// use cortex_m_rt::interrupt;
 
 /// Trait for interrupt handlers
 pub trait InterruptHandler<T> {

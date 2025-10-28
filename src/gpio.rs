@@ -72,6 +72,7 @@ macro_rules! gpio_op {
     }};
 }
 use embedded_hal::digital::{ErrorType, InputPin, OutputPin, StatefulOutputPin};
+use embedded_hal_async::digital::Wait;
 use crate::pac::{Gpioa, Gpiob, Gpioc, Gpiod, Afio};
 use crate::exti::{ExtiChannel, Edge};
 
@@ -225,10 +226,121 @@ pub type PD13 = Pin<'D', 13, mode::Input>;
 pub type PD14 = Pin<'D', 14, mode::Input>;
 pub type PD15 = Pin<'D', 15, mode::Input>;
 
+/// Type-erased GPIO pin that can be any pin on any port
+/// This allows storing different pins in collections like arrays
+pub struct AnyPin {
+    port: char,
+    pin: u8,
+    _mode: PhantomData<mode::Input>,
+}
+
+impl AnyPin {
+    /// Create a new AnyPin from port and pin number
+    pub fn new(port: char, pin: u8) -> Self {
+        Self {
+            port,
+            pin,
+            _mode: PhantomData,
+        }
+    }
+
+    /// Get the port character
+    pub fn port(&self) -> char {
+        self.port
+    }
+
+    /// Get the pin number
+    pub fn pin(&self) -> u8 {
+        self.pin
+    }
+}
+
+// Implement embedded-hal traits for AnyPin
+impl embedded_hal::digital::ErrorType for AnyPin {
+    type Error = GpioError;
+}
+
+impl embedded_hal::digital::OutputPin for AnyPin {
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        gpio_impl!(self.port, self.pin, set_low);
+        Ok(())
+    }
+
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        gpio_impl!(self.port, self.pin, set_high);
+        Ok(())
+    }
+}
+
+impl embedded_hal::digital::StatefulOutputPin for AnyPin {
+    fn is_set_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(gpio_impl!(self.port, self.pin, read_output))
+    }
+
+    fn is_set_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(!gpio_impl!(self.port, self.pin, read_output))
+    }
+}
+
+impl embedded_hal::digital::InputPin for AnyPin {
+    fn is_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(gpio_impl!(self.port, self.pin, read_input))
+    }
+
+    fn is_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(!gpio_impl!(self.port, self.pin, read_input))
+    }
+}
+
+// Implement embedded-hal-async traits for AnyPin
+impl embedded_hal_async::digital::Wait for AnyPin {
+    async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
+        // Simple polling implementation - in a real implementation this would use interrupts
+        while self.is_low()? {
+            embassy_time::Timer::after(embassy_time::Duration::from_micros(10)).await;
+        }
+        Ok(())
+    }
+
+    async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
+        // Simple polling implementation - in a real implementation this would use interrupts
+        while self.is_high()? {
+            embassy_time::Timer::after(embassy_time::Duration::from_micros(10)).await;
+        }
+        Ok(())
+    }
+
+    async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
+        self.wait_for_low().await?;
+        self.wait_for_high().await
+    }
+
+    async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
+        self.wait_for_high().await?;
+        self.wait_for_low().await
+    }
+
+    async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
+        let initial_state = self.is_high()?;
+        loop {
+            if self.is_high()? != initial_state {
+                return Ok(());
+            }
+            embassy_time::Timer::after(embassy_time::Duration::from_micros(10)).await;
+        }
+    }
+}
+
 impl<const PORT: char, const PIN: u8, MODE> Pin<PORT, PIN, MODE> {
     /// Create a new pin instance (primarily for BSP usage)
     pub fn new() -> Pin<PORT, PIN, mode::Input> {
         Pin { _mode: PhantomData }
+    }
+
+    /// Convert this pin to a type-erased AnyPin
+    /// This allows storing different pins in arrays or other collections
+    pub fn degrade(self) -> AnyPin {
+        AnyPin::new(PORT, PIN)
     }
 
     /// Convert pin to output mode
@@ -481,22 +593,22 @@ impl PortA {
         Self { _private: () }
     }
 
-    pub fn pa0(self) -> PA0 { Pin { _mode: PhantomData } }
-    pub fn pa1(self) -> PA1 { Pin { _mode: PhantomData } }
-    pub fn pa2(self) -> PA2 { Pin { _mode: PhantomData } }
-    pub fn pa3(self) -> PA3 { Pin { _mode: PhantomData } }
-    pub fn pa4(self) -> PA4 { Pin { _mode: PhantomData } }
-    pub fn pa5(self) -> PA5 { Pin { _mode: PhantomData } }
-    pub fn pa6(self) -> PA6 { Pin { _mode: PhantomData } }
-    pub fn pa7(self) -> PA7 { Pin { _mode: PhantomData } }
-    pub fn pa8(self) -> PA8 { Pin { _mode: PhantomData } }
-    pub fn pa9(self) -> PA9 { Pin { _mode: PhantomData } }
-    pub fn pa10(self) -> PA10 { Pin { _mode: PhantomData } }
-    pub fn pa11(self) -> PA11 { Pin { _mode: PhantomData } }
-    pub fn pa12(self) -> PA12 { Pin { _mode: PhantomData } }
-    pub fn pa13(self) -> PA13 { Pin { _mode: PhantomData } }
-    pub fn pa14(self) -> PA14 { Pin { _mode: PhantomData } }
-    pub fn pa15(self) -> PA15 { Pin { _mode: PhantomData } }
+    pub fn pa0(&mut self) -> PA0 { Pin { _mode: PhantomData } }
+    pub fn pa1(&mut self) -> PA1 { Pin { _mode: PhantomData } }
+    pub fn pa2(&mut self) -> PA2 { Pin { _mode: PhantomData } }
+    pub fn pa3(&mut self) -> PA3 { Pin { _mode: PhantomData } }
+    pub fn pa4(&mut self) -> PA4 { Pin { _mode: PhantomData } }
+    pub fn pa5(&mut self) -> PA5 { Pin { _mode: PhantomData } }
+    pub fn pa6(&mut self) -> PA6 { Pin { _mode: PhantomData } }
+    pub fn pa7(&mut self) -> PA7 { Pin { _mode: PhantomData } }
+    pub fn pa8(&mut self) -> PA8 { Pin { _mode: PhantomData } }
+    pub fn pa9(&mut self) -> PA9 { Pin { _mode: PhantomData } }
+    pub fn pa10(&mut self) -> PA10 { Pin { _mode: PhantomData } }
+    pub fn pa11(&mut self) -> PA11 { Pin { _mode: PhantomData } }
+    pub fn pa12(&mut self) -> PA12 { Pin { _mode: PhantomData } }
+    pub fn pa13(&mut self) -> PA13 { Pin { _mode: PhantomData } }
+    pub fn pa14(&mut self) -> PA14 { Pin { _mode: PhantomData } }
+    pub fn pa15(&mut self) -> PA15 { Pin { _mode: PhantomData } }
 }
 
 impl PortB {
@@ -504,22 +616,22 @@ impl PortB {
         Self { _private: () }
     }
 
-    pub fn pb0(self) -> PB0 { Pin { _mode: PhantomData } }
-    pub fn pb1(self) -> PB1 { Pin { _mode: PhantomData } }
-    pub fn pb2(self) -> PB2 { Pin { _mode: PhantomData } }
-    pub fn pb3(self) -> PB3 { Pin { _mode: PhantomData } }
-    pub fn pb4(self) -> PB4 { Pin { _mode: PhantomData } }
-    pub fn pb5(self) -> PB5 { Pin { _mode: PhantomData } }
-    pub fn pb6(self) -> PB6 { Pin { _mode: PhantomData } }
-    pub fn pb7(self) -> PB7 { Pin { _mode: PhantomData } }
-    pub fn pb8(self) -> PB8 { Pin { _mode: PhantomData } }
-    pub fn pb9(self) -> PB9 { Pin { _mode: PhantomData } }
-    pub fn pb10(self) -> PB10 { Pin { _mode: PhantomData } }
-    pub fn pb11(self) -> PB11 { Pin { _mode: PhantomData } }
-    pub fn pb12(self) -> PB12 { Pin { _mode: PhantomData } }
-    pub fn pb13(self) -> PB13 { Pin { _mode: PhantomData } }
-    pub fn pb14(self) -> PB14 { Pin { _mode: PhantomData } }
-    pub fn pb15(self) -> PB15 { Pin { _mode: PhantomData } }
+    pub fn pb0(&mut self) -> PB0 { Pin { _mode: PhantomData } }
+    pub fn pb1(&mut self) -> PB1 { Pin { _mode: PhantomData } }
+    pub fn pb2(&mut self) -> PB2 { Pin { _mode: PhantomData } }
+    pub fn pb3(&mut self) -> PB3 { Pin { _mode: PhantomData } }
+    pub fn pb4(&mut self) -> PB4 { Pin { _mode: PhantomData } }
+    pub fn pb5(&mut self) -> PB5 { Pin { _mode: PhantomData } }
+    pub fn pb6(&mut self) -> PB6 { Pin { _mode: PhantomData } }
+    pub fn pb7(&mut self) -> PB7 { Pin { _mode: PhantomData } }
+    pub fn pb8(&mut self) -> PB8 { Pin { _mode: PhantomData } }
+    pub fn pb9(&mut self) -> PB9 { Pin { _mode: PhantomData } }
+    pub fn pb10(&mut self) -> PB10 { Pin { _mode: PhantomData } }
+    pub fn pb11(&mut self) -> PB11 { Pin { _mode: PhantomData } }
+    pub fn pb12(&mut self) -> PB12 { Pin { _mode: PhantomData } }
+    pub fn pb13(&mut self) -> PB13 { Pin { _mode: PhantomData } }
+    pub fn pb14(&mut self) -> PB14 { Pin { _mode: PhantomData } }
+    pub fn pb15(&mut self) -> PB15 { Pin { _mode: PhantomData } }
 }
 
 impl PortC {
@@ -527,22 +639,22 @@ impl PortC {
         Self { _private: () }
     }
 
-    pub fn pc0(self) -> PC0 { Pin { _mode: PhantomData } }
-    pub fn pc1(self) -> PC1 { Pin { _mode: PhantomData } }
-    pub fn pc2(self) -> PC2 { Pin { _mode: PhantomData } }
-    pub fn pc3(self) -> PC3 { Pin { _mode: PhantomData } }
-    pub fn pc4(self) -> PC4 { Pin { _mode: PhantomData } }
-    pub fn pc5(self) -> PC5 { Pin { _mode: PhantomData } }
-    pub fn pc6(self) -> PC6 { Pin { _mode: PhantomData } }
-    pub fn pc7(self) -> PC7 { Pin { _mode: PhantomData } }
-    pub fn pc8(self) -> PC8 { Pin { _mode: PhantomData } }
-    pub fn pc9(self) -> PC9 { Pin { _mode: PhantomData } }
-    pub fn pc10(self) -> PC10 { Pin { _mode: PhantomData } }
-    pub fn pc11(self) -> PC11 { Pin { _mode: PhantomData } }
-    pub fn pc12(self) -> PC12 { Pin { _mode: PhantomData } }
-    pub fn pc13(self) -> PC13 { Pin { _mode: PhantomData } }
-    pub fn pc14(self) -> PC14 { Pin { _mode: PhantomData } }
-    pub fn pc15(self) -> PC15 { Pin { _mode: PhantomData } }
+    pub fn pc0(&mut self) -> PC0 { Pin { _mode: PhantomData } }
+    pub fn pc1(&mut self) -> PC1 { Pin { _mode: PhantomData } }
+    pub fn pc2(&mut self) -> PC2 { Pin { _mode: PhantomData } }
+    pub fn pc3(&mut self) -> PC3 { Pin { _mode: PhantomData } }
+    pub fn pc4(&mut self) -> PC4 { Pin { _mode: PhantomData } }
+    pub fn pc5(&mut self) -> PC5 { Pin { _mode: PhantomData } }
+    pub fn pc6(&mut self) -> PC6 { Pin { _mode: PhantomData } }
+    pub fn pc7(&mut self) -> PC7 { Pin { _mode: PhantomData } }
+    pub fn pc8(&mut self) -> PC8 { Pin { _mode: PhantomData } }
+    pub fn pc9(&mut self) -> PC9 { Pin { _mode: PhantomData } }
+    pub fn pc10(&mut self) -> PC10 { Pin { _mode: PhantomData } }
+    pub fn pc11(&mut self) -> PC11 { Pin { _mode: PhantomData } }
+    pub fn pc12(&mut self) -> PC12 { Pin { _mode: PhantomData } }
+    pub fn pc13(&mut self) -> PC13 { Pin { _mode: PhantomData } }
+    pub fn pc14(&mut self) -> PC14 { Pin { _mode: PhantomData } }
+    pub fn pc15(&mut self) -> PC15 { Pin { _mode: PhantomData } }
 }
 
 impl PortD {
@@ -550,22 +662,22 @@ impl PortD {
         Self { _private: () }
     }
 
-    pub fn pd0(self) -> PD0 { Pin { _mode: PhantomData } }
-    pub fn pd1(self) -> PD1 { Pin { _mode: PhantomData } }
-    pub fn pd2(self) -> PD2 { Pin { _mode: PhantomData } }
-    pub fn pd3(self) -> PD3 { Pin { _mode: PhantomData } }
-    pub fn pd4(self) -> PD4 { Pin { _mode: PhantomData } }
-    pub fn pd5(self) -> PD5 { Pin { _mode: PhantomData } }
-    pub fn pd6(self) -> PD6 { Pin { _mode: PhantomData } }
-    pub fn pd7(self) -> PD7 { Pin { _mode: PhantomData } }
-    pub fn pd8(self) -> PD8 { Pin { _mode: PhantomData } }
-    pub fn pd9(self) -> PD9 { Pin { _mode: PhantomData } }
-    pub fn pd10(self) -> PD10 { Pin { _mode: PhantomData } }
-    pub fn pd11(self) -> PD11 { Pin { _mode: PhantomData } }
-    pub fn pd12(self) -> PD12 { Pin { _mode: PhantomData } }
-    pub fn pd13(self) -> PD13 { Pin { _mode: PhantomData } }
-    pub fn pd14(self) -> PD14 { Pin { _mode: PhantomData } }
-    pub fn pd15(self) -> PD15 { Pin { _mode: PhantomData } }
+    pub fn pd0(&mut self) -> PD0 { Pin { _mode: PhantomData } }
+    pub fn pd1(&mut self) -> PD1 { Pin { _mode: PhantomData } }
+    pub fn pd2(&mut self) -> PD2 { Pin { _mode: PhantomData } }
+    pub fn pd3(&mut self) -> PD3 { Pin { _mode: PhantomData } }
+    pub fn pd4(&mut self) -> PD4 { Pin { _mode: PhantomData } }
+    pub fn pd5(&mut self) -> PD5 { Pin { _mode: PhantomData } }
+    pub fn pd6(&mut self) -> PD6 { Pin { _mode: PhantomData } }
+    pub fn pd7(&mut self) -> PD7 { Pin { _mode: PhantomData } }
+    pub fn pd8(&mut self) -> PD8 { Pin { _mode: PhantomData } }
+    pub fn pd9(&mut self) -> PD9 { Pin { _mode: PhantomData } }
+    pub fn pd10(&mut self) -> PD10 { Pin { _mode: PhantomData } }
+    pub fn pd11(&mut self) -> PD11 { Pin { _mode: PhantomData } }
+    pub fn pd12(&mut self) -> PD12 { Pin { _mode: PhantomData } }
+    pub fn pd13(&mut self) -> PD13 { Pin { _mode: PhantomData } }
+    pub fn pd14(&mut self) -> PD14 { Pin { _mode: PhantomData } }
+    pub fn pd15(&mut self) -> PD15 { Pin { _mode: PhantomData } }
 }
 
 /// Extension trait for GPIO port setup

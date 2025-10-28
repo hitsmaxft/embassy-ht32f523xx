@@ -1,3 +1,10 @@
+//! 60-key keyboard layout configuration for HT32F52352
+//!
+//! Full 3-layer keymap:
+//! - Layer 0: Base QWERTY layer
+//! - Layer 1: Function keys and navigation
+//! - Layer 2: System controls and additional functions
+
 use rmk_types::action::KeyAction;
 use rmk::{a, k, layer, mo};
 

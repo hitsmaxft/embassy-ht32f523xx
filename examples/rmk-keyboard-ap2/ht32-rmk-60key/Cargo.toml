@@ -9,23 +9,26 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-rmk = { git = "https://github.com/haobogu/rmk", features = ["async_matrix", "col2row"] }
+# RMK configuration for HT32F52352 with 16KB RAM - with vial support
+rmk = { git = "https://github.com/haobogu/rmk", default-features = false, features = ["async_matrix", "storage", "vial"] }
+rmk-types = { git = "https://github.com/haobogu/rmk", default-features = false }
 cortex-m = { workspace = true, features = ['critical-section-single-core'] }
 cortex-m-rt = { workspace = true }
-embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-thread", "defmt"] }
+# Minimal embassy features - remove defmt to save memory
+embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-thread"] }
 embassy-time = { workspace = true }
-embassy-ht32f523xx = { workspace = true, features = ["rt", "usb", "ht32f52342"] }
+embassy-ht32f523xx = { workspace = true, features = ["rt", "usb", "ht32f52352"] }
 ht32f523x2 = { workspace = true }
 static_cell = "2"
 portable-atomic = { version = "1.0", features = ["critical-section"] }
-defmt = { workspace = true }
-defmt-rtt = { workspace = true }
+# Remove defmt to save significant memory
+# defmt = { workspace = true }
+# defmt-rtt = { workspace = true }
 embedded-storage = "0.3.1"
 embedded-hal = { workspace = true }
 critical-section = { workspace = true }
-panic-probe = { version = "1.0", features = ["print-defmt"] }
-
-
+# Use panic-halt instead of panic-probe to save memory
+panic-halt = "1.0"
 
 
 [build-dependencies]
@@ -35,20 +38,22 @@ const-gen = "1.6"
 
 [[bin]]
 name = "rmk-ht32-60key"
+path = "src/main.rs"
 test = false
 bench = false
 
 [profile.dev]
 codegen-units = 1
-debug = true
-opt-level = 1
-overflow-checks = true
-lto = false
-panic = 'unwind'
+debug = false
+opt-level = "z"
+overflow-checks = false
+lto = "thin"
+panic = 'abort'
 
 [profile.release]
 codegen-units = 1
-debug = true
+debug = false
 opt-level = "z"
 overflow-checks = false
 lto = "fat"
+panic = 'abort'

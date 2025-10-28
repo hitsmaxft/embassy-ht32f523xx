@@ -12,13 +12,26 @@
 
 use std::fs::File;
 use std::io::Read;
+use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::{env, fs};
 
 use const_gen::*;
 use xz2::read::XzEncoder;
 
 fn main() {
+    let out = &PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    File::create(out.join("memory.x"))
+        .unwrap()
+        .write_all(include_bytes!("memory_minimal.x"))
+        .unwrap();
+    println!("cargo:rustc-link-search={}", out.display());
+
+    // Only re-run the build script when memory.x is changed,
+    // instead of when any part of the source code changes.
+    println!("cargo:rerun-if-changed=memory_minimal.x");
+
     // Generate vial config at the root of project
     println!("cargo:rerun-if-changed=vial.json");
     generate_vial_config();
@@ -33,11 +46,11 @@ fn main() {
     // Set the linker script to the one provided by cortex-m-rt.
     println!("cargo:rustc-link-arg=-Tlink.x");
 
-    // Set the extra linker script from defmt
-    println!("cargo:rustc-link-arg=-Tdefmt.x");
+    // Remove defmt linker script to save memory
+    // println!("cargo:rustc-link-arg=-Tdefmt.x");
 
-    // Use flip-link overflow check: https://github.com/knurling-rs/flip-link
-    println!("cargo:rustc-linker=flip-link");
+    // Disable flip-link to reduce build complexity
+    // println!("cargo:rustc-linker=flip-link");
 }
 
 fn generate_vial_config() {

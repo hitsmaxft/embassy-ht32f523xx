@@ -1,62 +1,71 @@
-# RMK 60-Key Keyboard Example for HT32F523xx
+# RMK HT32F523xx 60-Key Keyboard Example
 
-## Current Status: ⚠️ NEEDS UPDATES
+This example demonstrates how to use the Embassy HT32F523xx HAL with RMK (Rust Mechanical Keyboard) firmware for a 60% keyboard layout.
 
-This example is currently **disabled** in the workspace due to structural changes in the codebase and incomplete USB driver implementation.
+## ⚠️ Memory Requirements Notice
 
-## Issues to Fix
+**Important**: RMK is a feature-rich mechanical keyboard firmware that requires significant RAM and Flash memory. The HT32F523xx series microcontrollers have limited resources:
 
-### 1. GPIO API Changes
-The example uses the old HAL GPIO API structure:
-- `embassy_ht32f523xx::hal::gpio::GpioExt` - No longer exists
-- `p.GPIOA.split()` - GPIO API has changed to use const generics
-- Pin methods like `into_floating_input()` need updating
+- **HT32F52342**: 64KB Flash, 8KB RAM
+- **HT32F52352**: 128KB Flash, 16KB RAM
 
-### 2. USB Driver Implementation
-- The USB driver is not fully implemented yet
-- RMK requires a working USB HID interface
-- Embassy-USB driver trait compatibility issues need resolution
+Due to the complexity of RMK with all its features (USB HID, matrix scanning, key processing, storage, etc.), this example **currently exceeds the available RAM** on both chips.
 
-### 3. Dependencies
-- Embassy crate version conflicts between RMK and workspace
-- Some RMK KeyCode variants don't exist (LBracket, RBracket, Mute)
+## Status
 
-## Required Updates
+- ✅ **Compilation**: All GPIO, embedded-hal, and Embassy async traits compile successfully
+- ✅ **GPIO Matrix**: AnyPin type and degrade() methods work correctly
+- ✅ **Embassy Integration**: Async matrix scanning framework is ready
+- ❌ **Linking**: Fails due to insufficient RAM for the complete RMK stack
 
-### Phase 1: GPIO Migration
-1. Update GPIO usage to new Pin<PORT, PIN, MODE> structure
-2. Replace `.split()` calls with direct Pin constructors
-3. Update pin configuration methods
+## Alternatives
 
-### Phase 2: USB Driver Completion
-1. Complete embassy-usb-driver trait implementation
-2. Resolve version conflicts between embassy crates
-3. Test USB HID functionality
+For HT32F523xx users interested in keyboard firmware:
 
-### Phase 3: RMK Integration
-1. Update imports and API usage
-2. Fix KeyCode compatibility issues
-3. Test matrix scanning and key mapping
+### 1. Basic Keyboard Implementation
+Use the simpler `usb-hid-keyboard` example as a starting point and implement basic matrix scanning without the full RMK framework.
 
-## Usage (After Fixes)
+### 2. Reduced Feature RMK
+Disable some RMK features to reduce memory usage:
+```toml
+rmk = { git = "https://github.com/haobogu/rmk", features = ["async_matrix"], default-features = false }
+```
 
-Once updated, this example will provide:
-- Full 60-key mechanical keyboard firmware
-- Matrix scanning with debouncing
-- USB HID keyboard functionality
-- Vial configuration support
-- Real-time key remapping
+### 3. More Powerful MCU
+Consider using a microcontroller with more RAM (32KB+) such as:
+- STM32F4xx series
+- RP2040 (264KB RAM)
+- ESP32-S3
 
-## Contributing
+## Code Structure
 
-To work on this example:
-1. Uncomment the line in the main workspace Cargo.toml
-2. Fix the GPIO API usage to match the new structure
-3. Ensure USB driver is fully implemented
-4. Test with actual hardware
+The example demonstrates proper integration patterns:
 
-## Hardware Requirements
+- **GPIO Configuration**: Using AnyPin for matrix pin arrays
+- **Embassy Async**: Proper async matrix scanning setup
+- **USB Integration**: Embassy USB driver configuration
+- **Flash Storage**: RMK configuration storage
 
-- HT32F523xx development board
-- 60-key keyboard matrix (5 rows × 14 columns)
-- Proper pull-up resistors on matrix lines
+## Building
+
+```bash
+# Note: This will fail at linking stage due to memory constraints
+cargo build -p rmk-ht32-60key
+```
+
+## Hardware Compatibility
+
+This example is configured for:
+- **MCU**: HT32F52352 (128KB Flash, 16KB RAM)
+- **Layout**: 60% keyboard (5 rows × 14 columns)
+- **Matrix**: GPIO-based scanning
+
+## Future Work
+
+The Embassy HT32F523xx HAL provides all the necessary building blocks:
+- ✅ GPIO with embedded-hal traits
+- ✅ USB HID device support
+- ✅ Embassy async runtime
+- ✅ Flash storage capabilities
+
+For a working keyboard implementation on HT32F523xx, consider using the basic USB HID keyboard example and building up features incrementally.

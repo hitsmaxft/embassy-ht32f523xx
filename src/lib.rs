@@ -104,17 +104,17 @@ impl Default for Config {
 
 /// System peripherals
 pub struct Peripherals {
-    pub GPIOA: gpio::PortA,
-    pub GPIOB: gpio::PortB,
-    pub GPIOC: gpio::PortC,
-    pub GPIOD: gpio::PortD,
-    pub USART0: uart::Usart0,
-    pub USART1: uart::Usart1,
-    pub TIMER0: timer::Timer0,
-    pub TIMER1: timer::Timer1,
+    pub gpioa: gpio::PortA,
+    pub gpiob: gpio::PortB,
+    pub gpioc: gpio::PortC,
+    pub gpiod: gpio::PortD,
+    pub usart0: uart::Usart0,
+    pub usart1: uart::Usart1,
+    pub timer0: timer::Timer0,
+    pub timer1: timer::Timer1,
     #[cfg(feature = "usb")]
-    pub USB: usb::Usb,
-    pub FLASH: flash::Flash,
+    pub usb: usb::Usb,
+    pub flash: flash::Flash,
 }
 
 /// Initialize the chip and return peripheral instances
@@ -153,17 +153,17 @@ pub fn init(config: Config) -> Peripherals {
     let flash = flash::Flash::new();
 
     Peripherals {
-        GPIOA: gpioa,
-        GPIOB: gpiob,
-        GPIOC: gpioc,
-        GPIOD: gpiod,
-        USART0: usart0,
-        USART1: usart1,
-        TIMER0: timer0,
-        TIMER1: timer1,
+        gpioa,
+        gpiob,
+        gpioc,
+        gpiod,
+        usart0,
+        usart1,
+        timer0,
+        timer1,
         #[cfg(feature = "usb")]
-        USB: usb,
-        FLASH: flash,
+        usb,
+        flash,
     }
 }
 

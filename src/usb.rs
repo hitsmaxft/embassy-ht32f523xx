@@ -1,6 +1,14 @@
 //! USB Device driver for HT32F523xx
 //!
 //! This module provides USB device functionality using the embassy-usb framework.
+//!
+//! ## HT32F52352 USB Controller Specifications:
+//! - USB 2.0 full-speed (12 Mbps) compliant
+//! - 1 control endpoint (EP0) for control transfer
+//! - 3 single-buffered endpoints for bulk and interrupt transfer
+//! - 4 double-buffered endpoints for bulk, interrupt and isochronous transfer
+//! - 1,024 bytes EP_SRAM for endpoint data buffers
+//! - Total: 8 endpoints (1 control + 7 configurable)
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -13,8 +21,12 @@ use embassy_usb_driver::{
 
 use crate::pac;
 
-const MAX_EP_COUNT: usize = 8;
-const MAX_PACKET_SIZE: usize = 64;
+// HT32F52352 USB Controller Hardware Specifications
+const MAX_EP_COUNT: usize = 8;          // 1 control EP + 7 configurable EPs
+const MAX_PACKET_SIZE: usize = 64;      // Full-speed USB max packet size
+const EP_SRAM_SIZE: usize = 1024;       // Total endpoint buffer memory
+const SINGLE_BUFFERED_EPS: usize = 3;   // Single-buffered endpoints (bulk/interrupt)
+const DOUBLE_BUFFERED_EPS: usize = 4;   // Double-buffered endpoints (bulk/interrupt/iso)
 
 /// USB peripheral handle
 pub struct Usb {
@@ -55,12 +67,14 @@ impl<'d> Driver<'d> {
     }
 }
 
-/// USB bus implementation
+/// USB bus implementation for HT32F52352 USB controller
+/// Hardware: 1 control EP + 7 configurable EPs, 1024-byte EP_SRAM
 pub struct Bus<'d> {
     phantom: PhantomData<&'d ()>,
-    ep_types: [Option<EndpointType>; MAX_EP_COUNT],
-    ep_in_wakers: [AtomicWaker; MAX_EP_COUNT],
-    ep_out_wakers: [AtomicWaker; MAX_EP_COUNT],
+    // Arrays for all 8 endpoints (EP0 + 7 configurable)
+    ep_types: [Option<EndpointType>; MAX_EP_COUNT], // 8 endpoints total
+    ep_in_wakers: [AtomicWaker; MAX_EP_COUNT], // IN endpoint wakers
+    ep_out_wakers: [AtomicWaker; MAX_EP_COUNT], // OUT endpoint wakers
     bus_waker: AtomicWaker,
 }
 
@@ -69,9 +83,9 @@ impl<'d> Bus<'d> {
         const NEW_AW: AtomicWaker = AtomicWaker::new();
         Self {
             phantom: PhantomData,
-            ep_types: [None; MAX_EP_COUNT],
-            ep_in_wakers: [NEW_AW; MAX_EP_COUNT],
-            ep_out_wakers: [NEW_AW; MAX_EP_COUNT],
+            ep_types: [None; MAX_EP_COUNT], // 8 endpoints
+            ep_in_wakers: [NEW_AW; MAX_EP_COUNT], // Full waker arrays
+            ep_out_wakers: [NEW_AW; MAX_EP_COUNT], // Full waker arrays
             bus_waker: AtomicWaker::new(),
         }
     }
@@ -319,10 +333,17 @@ fn configure_endpoint_hardware(addr: EndpointAddress, _ep_type: EndpointType, ma
     let usb = unsafe { &*pac::Usb::ptr() };
     let ep_num = addr.index();
 
-    // Calculate buffer address (each endpoint gets 64-byte buffer)
-    let buffer_addr = ep_num * 64;
+    // Calculate buffer address in 1024-byte EP_SRAM
+    // EP0 (control): First 64 bytes, then distribute remaining space among configurable EPs
+    let buffer_addr = if ep_num == 0 {
+        0 // EP0 control endpoint starts at beginning
+    } else {
+        // Configurable endpoints: distribute remaining 960 bytes (1024 - 64)
+        64 + ((ep_num - 1) * (960 / 7)) // Approximately equal distribution
+    };
 
-    // Configure endpoint based on endpoint number
+    // Configure endpoint based on endpoint number and type
+    // Hardware supports: EP1-3 (single-buffered), EP4-7 (double-buffered)
     match ep_num {
         0 => {
             usb.ep0cfgr().modify(|_, w| unsafe {
@@ -477,5 +498,5 @@ fn disable_usb_device() {
     usb.csr().modify(|_, w| w.genrsm().clear_bit());
 }
 
-/// Static memory for USB endpoints
-static mut EP_MEMORY: [u8; 1024] = [0; 1024];
+/// USB endpoint memory buffer - matches HT32F52352 hardware: 1024-byte EP_SRAM
+static mut EP_MEMORY: [u8; EP_SRAM_SIZE] = [0; EP_SRAM_SIZE];

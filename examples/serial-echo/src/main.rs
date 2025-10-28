@@ -35,7 +35,7 @@ async fn main(_spawner: Spawner) {
 
     // Create UART instance with TX/RX pins from board
     let mut uart = Uart::new(
-        p.USART0,           // UART peripheral
+        p.usart0,           // UART peripheral
         board.uart_tx,      // TX pin
         board.uart_rx,      // RX pin
         uart_config,

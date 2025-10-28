@@ -31,7 +31,7 @@ async fn main(_spawner: Spawner) {
 
     // Create the USB driver
     let usb_config = UsbConfig::default();
-    let driver = Driver::new(p.USB, usb_config);
+    let driver = Driver::new(p.usb, usb_config);
 
     // Create embassy-usb Config
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
