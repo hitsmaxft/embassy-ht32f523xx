@@ -4,7 +4,7 @@ members = [
     "examples/blink-embassy",
     "examples/serial-echo",
     "examples/usb-hid-keyboard",
-    "examples/rmk-keyboard-ap2/ht32-rmk-60key",
+    "examples/ht32-rmk-60key",
 ]
 resolver = "2"
 

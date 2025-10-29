@@ -5,8 +5,8 @@
 //! - Layer 1: Function keys and navigation
 //! - Layer 2: System controls and additional functions
 
-use rmk_types::action::KeyAction;
 use rmk::{a, k, layer, mo};
+use rmk_types::action::KeyAction;
 
 pub(crate) const COL: usize = 14;
 pub(crate) const ROW: usize = 5;

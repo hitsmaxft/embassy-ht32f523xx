@@ -23,6 +23,7 @@ mod vial;
 use embassy_executor::Spawner;
 use embassy_ht32f523xx::usb::Driver;
 use keymap::{COL, ROW};
+use panic_halt as _;
 use rmk::channel::EVENT_CHANNEL;
 use rmk::config::{BehaviorConfig, PositionalConfig, RmkConfig, StorageConfig, VialConfig};
 use rmk::debounce::default_debouncer::DefaultDebouncer;
@@ -33,7 +34,6 @@ use rmk::matrix::Matrix;
 use rmk::storage::async_flash_wrapper;
 use rmk::{initialize_keymap_and_storage, run_devices, run_rmk};
 use vial::{VIAL_KEYBOARD_DEF, VIAL_KEYBOARD_ID};
-use {panic_halt as _};
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -56,13 +56,20 @@ async fn main(_spawner: Spawner) {
     ];
 
     let output_pins: [AnyPin; COL] = [
-        p.gpiob.pb0().degrade(), p.gpiob.pb1().degrade(),
-        p.gpiob.pb2().degrade(), p.gpiob.pb3().degrade(),
-        p.gpiob.pb4().degrade(), p.gpiob.pb5().degrade(),
-        p.gpiob.pb6().degrade(), p.gpiob.pb7().degrade(),
-        p.gpiob.pb8().degrade(), p.gpiob.pb9().degrade(),
-        p.gpiob.pb10().degrade(), p.gpiob.pb11().degrade(),
-        p.gpiob.pb12().degrade(), p.gpiob.pb13().degrade(),
+        p.gpiob.pb0().degrade(),
+        p.gpiob.pb1().degrade(),
+        p.gpiob.pb2().degrade(),
+        p.gpiob.pb3().degrade(),
+        p.gpiob.pb4().degrade(),
+        p.gpiob.pb5().degrade(),
+        p.gpiob.pb6().degrade(),
+        p.gpiob.pb7().degrade(),
+        p.gpiob.pb8().degrade(),
+        p.gpiob.pb9().degrade(),
+        p.gpiob.pb10().degrade(),
+        p.gpiob.pb11().degrade(),
+        p.gpiob.pb12().degrade(),
+        p.gpiob.pb13().degrade(),
     ];
 
     // Initialize HT32F52352 flash storage (16KB RAM, 128KB Flash)
@@ -74,8 +81,14 @@ async fn main(_spawner: Spawner) {
     let storage_config = StorageConfig::default();
     let mut positional_config = PositionalConfig::default();
 
-    let (keymap, mut storage) =
-        initialize_keymap_and_storage(&mut default_keymap, flash, &storage_config, &mut behavior_config, &mut positional_config).await;
+    let (keymap, mut storage) = initialize_keymap_and_storage(
+        &mut default_keymap,
+        flash,
+        &storage_config,
+        &mut behavior_config,
+        &mut positional_config,
+    )
+    .await;
 
     // Initialize the matrix scanner and keyboard
     let debouncer = DefaultDebouncer::<ROW, COL>::new();
