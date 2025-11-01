@@ -14,6 +14,47 @@ pub use crate::pac::Interrupt;
 // TODO: Will be used when implementing actual interrupt handlers
 // use cortex_m_rt::interrupt;
 
+/// Critical section implementation for defmt
+///
+/// This provides the necessary symbols for defmt logging to work
+/// with the HT32F523xx microcontroller.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _critical_section_1_0_acquire() -> u32 {
+    // Disable all interrupts using PRIMASK
+    let primask: u32;
+    unsafe {
+        core::arch::asm!(
+            "mrs {0}, PRIMASK",
+            "cpsid i",  // Disable interrupts
+            out(reg) primask,
+            options(pure, nomem, nostack, preserves_flags)
+        );
+    }
+    primask
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _critical_section_1_0_release(token: u32) {
+    // Restore interrupt state from token
+    if token & 0x1 == 0 {
+        // Interrupts were enabled, restore them
+        unsafe {
+            core::arch::asm!("cpsie i", options(nomem, nostack, preserves_flags));
+        }
+    }
+    // If interrupts were disabled (token & 0x1 == 1), keep them disabled
+}
+
+/// Default interrupt handler placeholder
+#[unsafe(no_mangle)]
+pub extern "C" fn DefaultHandler() -> ! {
+    loop {
+        unsafe {
+            core::arch::asm!("wfi");
+        }
+    }
+}
+
 /// Trait for interrupt handlers
 pub trait InterruptHandler<T> {
     /// Handle the interrupt

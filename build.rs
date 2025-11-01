@@ -8,10 +8,10 @@ fn main() {
     let (memory_file, chip_info) = if cfg!(feature = "ht32f52342") {
         ("memory_ht32f52342.x", "HT32F52342: 64KB Flash, 8KB RAM")
     } else if cfg!(feature = "ht32f52352") {
-        ("memory_ht32f52352.x", "HT32F52352: 128KB Flash, 16KB RAM")
+        ("memory_ht32f52352_full.x", "HT32F52352: 128KB Flash, 16KB RAM")
     } else {
         // Default to larger chip for safety
-        ("memory_ht32f52352.x", "HT32F52352: 128KB Flash, 16KB RAM (default)")
+        ("memory_ht32f52352_full.x", "HT32F52352: 128KB Flash, 16KB RAM (default)")
     };
 
     // Tell user which chip configuration is being used
