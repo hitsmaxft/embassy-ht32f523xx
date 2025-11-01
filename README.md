@@ -8,7 +8,9 @@ A unified, production-ready Embassy implementation providing complete hardware a
 
 > **Version**: 0.1.0
 > **Status**: 🟡 **Active Development** - Foundation Complete (45% implementation)
-> **Hardware Testing**: ✅ **Ready**
+
+* GpIO LED blink example ， tested
+
 
 ## 📋 Quick Overview
 
