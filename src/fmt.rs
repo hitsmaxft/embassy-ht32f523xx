@@ -16,10 +16,10 @@ pub fn init() {
     // This function can be extended to setup RTT, defmt, or other logging
 }
 
-/// Print to defmt if available
+/// Print to defmt if available (no-op for now)
 #[cfg(feature = "defmt")]
-pub fn println(args: defmt::Arguments) {
-    defmt::println!("{}", args);
+pub fn println(_args: core::fmt::Arguments) {
+    // TODO: Implement proper defmt formatting
 }
 
 /// Print to defmt if available (no-op otherwise)

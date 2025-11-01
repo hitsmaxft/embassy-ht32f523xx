@@ -11,8 +11,10 @@ cortex-m = { workspace = true }
 embedded-hal = { workspace = true }
 embassy-ht32f523xx = { workspace = true }
 ht32f523x2 = { workspace = true }
+defmt = { version = "0.3", optional = true }
 
 [features]
 default = ["esk32-30501"]
 esk32-30501 = []
 rt = ["ht32f523x2/rt"]
+defmt = ["dep:defmt", "embassy-ht32f523xx/defmt"]

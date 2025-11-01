@@ -35,8 +35,10 @@
 //!
 //!     loop {
 //!         led.set_high();
+//!     defmt::info!("LED on");
 //!         Timer::after_millis(500).await;
 //!         led.set_low();
+//!     defmt::info!("LED off");
 //!         Timer::after_millis(500).await;
 //!     }
 //! }
@@ -44,6 +46,12 @@
 
 // Re-export the PAC for direct register access
 pub use ht32f523x2 as pac;
+
+// Initialize defmt-rtt when defmt feature is enabled
+#[cfg(feature = "defmt")]
+mod defmt_init {
+    use defmt_rtt as _;
+}
 
 // Chip-specific memory configuration
 #[cfg(flash_size_64k)]

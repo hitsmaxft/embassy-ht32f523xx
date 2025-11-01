@@ -160,7 +160,6 @@ pub fn configure_exti_source(line: ExtiLine, port: char) {
 /// Initialize EXTI system
 pub fn init() {
     // Enable EXTI and AFIO clocks (already done in RCC init)
-    // Clear all pending interrupts
-    let exti = unsafe { &*Exti::ptr() };
-    exti.edgeflgr().write(|w| unsafe { w.bits(0xFFFF) }); // Clear all flags
+    // Note: EXTI initialization is postponed until actually needed
+    // This avoids accessing uninitialized peripherals during system startup
 }

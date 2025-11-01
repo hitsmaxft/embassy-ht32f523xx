@@ -1,8 +1,9 @@
 [package]
-name = "blink-embassy"
+name = "blink"
 version = "0.1.0"
 edition = "2024"
 authors = ["hitsmaxft <mfthits@gmail.com>"]
+
 
 [[bin]]
 name = "blink"
@@ -18,5 +19,9 @@ defmt-rtt = { workspace = true }
 panic-probe = { workspace = true, features = ["print-defmt"] }
 embedded-hal = { workspace = true }
 
-embassy-ht32f523xx = { workspace = true, features = ["rt", "ht32f52352"] }
-ht32-bsp = { path = "../../bsp", features = ["rt"] }
+embassy-ht32f523xx = { path = "../../", features = ["rt", "ht32f52352", "defmt"] }
+ht32-bsp = { path = "../../bsp", features = ["rt", "defmt"] }
+
+# Build dependencies for cargo-binutils (needed for objcopy)
+[build-dependencies]
+cargo-binutils = "0.3"

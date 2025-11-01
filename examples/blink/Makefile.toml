@@ -1,0 +1,30 @@
+[tasks.install-llvm-tools]
+install_crate = { rustup_component_name = "llvm-tools" }
+
+[tasks.flip-link]
+install_crate = { crate_name = "flip-link", binary = "flip-link", test_arg = ["-h"] }
+
+
+
+[tasks.build]
+command = "cargo"
+args = ["build", "--release"]
+#dependencies = ["clean"]
+
+[tasks.hex]
+command = "arm-none-eabi-objcopy"
+args = ["-O", "ihex", "../../target/thumbv6m-none-eabi/release/blink", "blink.hex"]
+dependencies = ["install-llvm-tools", "build"]
+
+[tasks.bin]
+command = "arm-none-eabi-objcopy"
+args = ["-O", "binary", "../../target/thumbv6m-none-eabi/release/blink", "blink.bin"]
+dependencies = ["install-llvm-tools", "build"]
+[tasks.flash]
+command = "probe-rs"
+args = ["run", "--chip", "HT32F52352", "../../target/thumbv6m-none-eabi/release/blink"]
+dependencies = ["build"]
+
+[tasks.clean]
+command = "cargo"
+args = ["clean"]
