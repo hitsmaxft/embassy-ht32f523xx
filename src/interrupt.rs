@@ -11,8 +11,7 @@ pub use crate::pac::Interrupt;
 
 // Import cortex_m_rt for interrupt handlers
 #[cfg(feature = "rt")]
-// TODO: Will be used when implementing actual interrupt handlers
-// use cortex_m_rt::interrupt;
+use cortex_m_rt::interrupt;
 
 /// Critical section implementation for defmt
 ///
@@ -158,3 +157,11 @@ pub fn init() {
 // TODO: Interrupt handlers will be implemented in a future update
 // The interrupt waker system is functional for async/await,
 // but actual ISR functions need proper cortex-m-rt integration
+
+// GPTM0 interrupt handler for embassy-time driver
+// TODO: Fix interrupt handler integration with cortex-m-rt
+// #[cfg(feature = "rt")]
+// #[cortex_m_rt::interrupt]
+// unsafe fn GPTM0() {
+//     crate::time_driver::TimeDriver::on_gptm0_interrupt();
+// }

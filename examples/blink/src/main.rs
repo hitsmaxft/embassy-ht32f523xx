@@ -15,32 +15,29 @@ async fn main(_spawner: Spawner) -> ! {
     let config = Config::default();
     let _p = embassy_ht32f523xx::init(config);
 
-    info!("HT32 Blink Example Started");
+    info!("HT32 Blink Example Started - Testing async timers!");
 
     let mut leds = Leds::new();
     info!("LEDs initialized");
 
-    let mut led1_on = true;
-    info!("Starting blink loop");
+    info!("Starting async blink loop with duration=1s");
 
+    // Let's start with simple 1-second intervals to test the async timing
     loop {
-        if led1_on {
-            leds.led1.set_high().unwrap();
-            leds.led2.set_low().unwrap();
-            info!("LED1 ON, LED2 OFF");
-        } else {
-            leds.led1.set_low().unwrap();
-            leds.led2.set_high().unwrap();
-            info!("LED1 OFF, LED2 ON");
-        }
+        leds.led1.set_high().unwrap();
+        leds.led2.set_low().unwrap();
+        info!("LED1 ON, LED2 OFF");
 
-        led1_on = !led1_on;
+        // Test basic async timer
+        Timer::after(Duration::from_millis(1000)).await;
 
-        // Simple delay - no Embassy Timer
-        for _ in 0..1_000_000 {
-            cortex_m::asm::nop();
-        }
-        // Use Embassy Timer for async delay
-        //Timer::after(Duration::from_millis(500)).await;
+        leds.led1.set_low().unwrap();
+        leds.led2.set_high().unwrap();
+        info!("LED1 OFF, LED2 ON");
+
+        // Test another async timer
+        Timer::after(Duration::from_millis(1000)).await;
+
+        info!("Completed one blink cycle");
     }
 }

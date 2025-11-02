@@ -131,7 +131,7 @@ pub fn init(config: Config) -> Peripherals {
     let _clocks = rcc::init(config.rcc);
 
     // Initialize embassy-time driver using GPTM0
-    time_driver::init();
+    critical_section::with(|cs| time_driver::init(cs));
 
     // Initialize interrupt system
     interrupt::init();
