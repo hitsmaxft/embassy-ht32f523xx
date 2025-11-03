@@ -1,3 +1,22 @@
+<!-- OPENSPEC:START -->
+# OpenSpec Instructions
+
+These instructions are for AI assistants working in this project.
+
+Always open `@/openspec/AGENTS.md` when the request:
+- Mentions planning or proposals (words like proposal, spec, change, plan)
+- Introduces new capabilities, breaking changes, architecture shifts, or big performance/security work
+- Sounds ambiguous and you need the authoritative spec before coding
+
+Use `@/openspec/AGENTS.md` to learn:
+- How to create and apply change proposals
+- Spec format and conventions
+- Project structure and guidelines
+
+Keep this managed block so 'openspec update' can refresh the instructions.
+
+<!-- OPENSPEC:END -->
+
 # embassy-ht32f523xx rust lib
 
 Embassy HAL implementation for HT32F523xx microcontrollers
@@ -97,3 +116,5 @@ embassy-ht32/
 * ht32f523x2 rust Peripheral Access API placed under ./deps/ht32f523x2/
 * SVD file placed under ./deps/ht32f523x2/HT32F52342_52.svd
 * **Note**: ht32-rmk-60key project uses HT32F52352 MCU (C18 revision) - 16KB RAM, 128KB Flash
+- use github mcp to search or clone repos you need for researching embassy and ht32 codes, code should place under ./deps/
+- this project's github repo is  git@github.com:hitsmaxft/embassy-ht32.git
