@@ -72,7 +72,6 @@ macro_rules! gpio_op {
     }};
 }
 use embedded_hal::digital::{ErrorType, InputPin, OutputPin, StatefulOutputPin};
-use embedded_hal_async::digital::Wait;
 use crate::pac::{Gpioa, Gpiob, Gpioc, Gpiod, Afio};
 use crate::exti::{ExtiChannel, Edge};
 

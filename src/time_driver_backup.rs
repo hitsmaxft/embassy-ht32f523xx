@@ -88,10 +88,10 @@ impl TimeDriver {
         timer.gptm_ch0ccr().write(|w| unsafe { w.bits(0) });  // Compare at 0
 
         // Enable DMA/Interrupt - note: HT32 uses .set_bit()/.clear_bit() style
-        timer.gptm_dictr().modify(|_, w| w.ch0ccie().set_bit());
+        timer.gptm_dictr().modify(|_, w| w.cc0ie().set_bit().ccmw0().set_bit());
 
-        // Clear any pending interrupts - not sure what field to use, try UEVG
-        timer.gptm_evgr().write(|w| w.uevg().set_bit());
+        // Clear any pending interrupts
+        timer.gptm_evgr().write(|w| w.cc0of().set_bit());
 
         // Start timer
         timer.gptm_ctr().modify(|_, w| w.tme().set_bit());
@@ -108,8 +108,8 @@ impl TimeDriver {
             let intsr = timer.gptm_intsr().read();
 
             // Clear interrupt flags by writing to EVGR
-            if intsr.ch0ccif().bit() {
-                timer.gptm_evgr().write(|w| w.uevg().set_bit());
+            if intsr.cc0if().bit() {
+                timer.gptm_evgr().write(|w| w.cc0of().set_bit());
 
                 // Check if this is a 0x8000 crossing (half-period)
                 let counter = timer.gptm_cntr().read().bits() as u16;
@@ -119,8 +119,7 @@ impl TimeDriver {
             }
 
             // Handle overflow differently in HT32
-            // Not sure what field rccev0 should be, let's just check counter == 0
-            if timer.gptm_cntr().read().bits() == 0 {
+            if intsr.rccev0().bit() || timer.gptm_cntr().read().bits() == 0 {
                 // Counter reached 0 (overflow)
                 self.next_period();
             }
@@ -134,7 +133,7 @@ impl TimeDriver {
 
         // Since HT32 doesn't have sophisticated interrupt control, we'll create
         // a basic timer overflow update - this gets called periodically
-        let _t = (period as u64) << 15;
+        let t = (period as u64) << 15;
 
         critical_section::with(move |cs| {
             let alarm = self.alarm.borrow(cs);
@@ -183,7 +182,7 @@ impl Driver for TimeDriver {
         calc_now(period, counter)
     }
 
-    fn schedule_wake(&self, at: u64, _waker: &core::task::Waker) {
+    fn schedule_wake(&self, at: u64, waker: &core::task::Waker) {
         critical_section::with(|cs| {
             // Since HT32 doesn't have sophisticated interrupt management like STM32,
             // we'll make a simple alarm and the executor will poll to check its status
