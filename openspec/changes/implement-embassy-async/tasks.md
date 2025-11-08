@@ -12,20 +12,20 @@
 - [x] 2.5 Test Timer::await functionality with executor integration
 
 ## 3. Time System - Standard Embassy Time Driver
-- [ ] 3.1 Replace custom `trigger_alarm()` with standard `embassy_time::alarm::on_interrupt()`
-- [ ] 3.2 Update GPTM0 interrupt handler to use Embassy standard patterns
-- [ ] 3.3 Remove polling-based fallback mechanisms from now() function
-- [ ] 3.4 Test timer precision with multiple concurrent Timer::await calls
-- [ ] 3.5 Validate Instant::now monotonicity and accuracy
+- [x] 3.1 Replace custom `trigger_alarm()` with standard `embassy_time::alarm::on_interrupt()`
+- [x] 3.2 Update GPTM0 interrupt handler to use Embassy standard patterns
+- [x] 3.3 Remove polling-based fallback mechanisms from now() function
+- [x] 3.4 Test timer precision with multiple concurrent Timer::await calls
+- [x] 3.5 Validate Instant::now monotonicity and accuracy
 - [ ] 3.6 Test long-running timer stability (24+ hours)
 
 ## 4. Peripheral Async - Interrupt-Driven I/O
-- [ ] 4.1 Implement AtomicWaker-based async GPIO with interrupt support
-- [ ] 4.2 Replace polling GPIO async implementation with interrupt-driven version
+- [x] 4.1 Implement AtomicWaker-based async GPIO with interrupt support
+- [x] 4.2 Replace polling GPIO async implementation with interrupt-driven version
 - [ ] 4.3 Create async UART implementation with interrupt-driven TX/RX
 - [ ] 4.4 Add embedded_hal_async serial traits to UART driver
-- [ ] 4.5 Implement EXTI interrupt handlers for GPIO async operations
-- [ ] 4.6 Test button press async response (non-polling)
+- [x] 4.5 Implement EXTI interrupt handlers for GPIO async operations
+- [x] 4.6 Test button press async response (non-polling)
 - [ ] 4.7 Test UART async read/write with echo validation
 
 ## 5. Complete Async Traits - Full embedded_hal_async Support

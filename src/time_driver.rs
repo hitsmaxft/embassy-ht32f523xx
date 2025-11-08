@@ -146,7 +146,7 @@ impl TimeDriver {
         })
     }
 
-    // Trigger alarm processing - called from interrupt handler
+    // Trigger alarm processing - called from on_interrupt()
     fn trigger_alarm(&self, cs: CriticalSection) {
         // Clear current alarm
         self.alarm.borrow(cs).timestamp.set(u64::MAX);
@@ -158,39 +158,36 @@ impl TimeDriver {
         }
     }
 
-    // Enable alarm if it's approaching within the current period
-    fn enable_nearby_alarms(&self, now: u64) {
-        critical_section::with(|cs| {
-            let alarm = self.alarm.borrow(cs);
-            let alarm_time = alarm.timestamp.get();
+    // Standard Embassy interrupt handler - called from GPTM0 interrupt
+    pub fn on_interrupt(&self) {
+        let timer = unsafe { &*crate::pac::Gptm0::ptr() };
 
-            if alarm_time != u64::MAX {
-                // Use same threshold as STM32: 0xc000 ticks
-                if alarm_time < now + 0xc000 {
-                    // Alarm is approaching, enable it
-                    let timer = unsafe { &*crate::pac::Gptm0::ptr() };
-                    timer.gptm_dictr().modify(|_, w| w.ch1ccie().set_bit());
-                }
+        critical_section::with(|cs| {
+            // Read interrupt status
+            let intsr = timer.gptm_intsr().read();
+
+            // Clear all interrupt flags immediately
+            timer.gptm_intsr().write(|w| {
+                w.uevif().set_bit()    // Clear Update Event flag
+                 .ch0ccif().set_bit()    // Clear Channel 0 flag
+                 .ch1ccif().set_bit()    // Clear Channel 1 flag
+            });
+
+            // Handle update event (overflow) interrupt
+            if intsr.uevif().bit() {
+                // Timer overflow occurred - this may affect period tracking
+                // Our overflow detection in now() will handle this
             }
-        })
-    }
 
-    // Check for expired alarms and trigger them
-    fn check_expired_alarms(&self, now: u64) {
-        critical_section::with(|cs| {
-            let alarm = self.alarm.borrow(cs);
-            let alarm_time = alarm.timestamp.get();
+            // Handle channel 0 (half-overflow) interrupt
+            if intsr.ch0ccif().bit() {
+                // Half-overflow occurred - may affect period tracking
+            }
 
-            // DEBUG: Check if we have any alarm set
-            if alarm_time != u64::MAX {
-                // DEBUG: We have an alarm, check if it expired
-                if alarm_time <= now {
-                    // Alarm has expired, trigger alarm processing
-                    self.trigger_alarm(cs);
-                } else {
-                    // Check if alarm is approaching and should be enabled
-                    self.enable_nearby_alarms(now);
-                }
+            // Handle channel 1 (alarm) interrupt
+            if intsr.ch1ccif().bit() {
+                // Alarm interrupt - trigger alarm processing
+                self.trigger_alarm(cs);
             }
         })
     }
@@ -220,10 +217,6 @@ impl Driver for TimeDriver {
             }
         });
 
-        // Check for expired alarms EVERY time now() is called
-        // This provides a polling-based fallback if interrupts don't work
-        self.check_expired_alarms(now);
-
         now
     }
 
@@ -247,38 +240,8 @@ pub(crate) fn init(cs: CriticalSection) {
     DRIVER.init(cs)
 }
 
-/// Handle GPTM0 interrupt - called from interrupt handler
-pub fn handle_gptm0_interrupt() {
-    let timer = unsafe { &*crate::pac::Gptm0::ptr() };
-
-    critical_section::with(|_| {
-        // Read interrupt status
-        let intsr = timer.gptm_intsr().read();
-
-        // Clear all interrupt flags immediately
-        timer.gptm_intsr().write(|w| {
-            w.uevif().set_bit()    // Clear Update Event flag
-             .ch0ccif().set_bit()    // Clear Channel 0 flag
-             .ch1ccif().set_bit()    // Clear Channel 1 flag
-        });
-
-        // Handle update event (overflow) interrupt
-        if intsr.uevif().bit() {
-            // Timer overflow occurred - this may affect period tracking
-            // Our overflow detection in now() will handle this
-        }
-
-        // Handle channel 0 (half-overflow) interrupt
-        if intsr.ch0ccif().bit() {
-            // Half-overflow occurred - may affect period tracking
-        }
-
-        // Handle channel 1 (alarm) interrupt
-        if intsr.ch1ccif().bit() {
-            // Alarm interrupt - trigger alarm processing
-            critical_section::with(|cs| {
-                DRIVER.trigger_alarm(cs);
-            });
-        }
-    })
+/// Get the time driver instance - used by interrupt handler
+pub fn get_river() -> &'static TimeDriver {
+    &DRIVER
 }
+

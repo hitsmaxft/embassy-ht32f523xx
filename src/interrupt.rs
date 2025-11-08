@@ -165,5 +165,45 @@ pub fn init() {
 #[cfg(feature = "rt")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn GPTM0() {
-    crate::time_driver::handle_gptm0_interrupt();
+    crate::time_driver::get_river().on_interrupt();
+}
+
+// EXTI interrupt handlers for GPIO async operations
+#[cfg(feature = "rt")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn EXTI0_1() {
+    let exti = unsafe { &*crate::pac::Exti::ptr() };
+    let pending = exti.edgeflgr().read().bits();
+
+    // Clear pending interrupts
+    exti.edgeflgr().write(|w| unsafe { w.bits(pending) });
+
+    // Wake tasks waiting on EXTI0_1
+    EXTI0_1_WAKER.wake();
+}
+
+#[cfg(feature = "rt")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn EXTI2_3() {
+    let exti = unsafe { &*crate::pac::Exti::ptr() };
+    let pending = exti.edgeflgr().read().bits();
+
+    // Clear pending interrupts
+    exti.edgeflgr().write(|w| unsafe { w.bits(pending) });
+
+    // Wake tasks waiting on EXTI2_3
+    EXTI2_3_WAKER.wake();
+}
+
+#[cfg(feature = "rt")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn EXTI4_15() {
+    let exti = unsafe { &*crate::pac::Exti::ptr() };
+    let pending = exti.edgeflgr().read().bits();
+
+    // Clear pending interrupts
+    exti.edgeflgr().write(|w| unsafe { w.bits(pending) });
+
+    // Wake tasks waiting on EXTI4_15
+    EXTI4_15_WAKER.wake();
 }

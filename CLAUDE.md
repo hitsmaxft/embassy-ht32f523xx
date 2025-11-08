@@ -113,7 +113,7 @@ embassy-ht32/
 
 ### ht32f523x2 Peripheral Access API
 
-* ht32f523x2 rust Peripheral Access API placed under ./deps/ht32f523x2/
+* ht32f523x2 rust Peripheral Access API placed under submodule ./deps/ht32f523x2/
 * SVD file placed under ./deps/ht32f523x2/HT32F52342_52.svd
 * **Note**: ht32-rmk-60key project uses HT32F52352 MCU (C18 revision) - 16KB RAM, 128KB Flash
 - use github mcp to search or clone repos you need for researching embassy and ht32 codes, code should place under ./deps/

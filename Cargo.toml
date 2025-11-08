@@ -8,6 +8,8 @@ members = [
     "tests/time_driver_simple_test",
     "tests/executor_interrupt_test",
     "tests/test_critical_section",
+    "tests/timer_precision_test",
+    "tests/async_gpio_test",
 ]
 resolver = "2"
 

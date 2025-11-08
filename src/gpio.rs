@@ -294,39 +294,93 @@ impl embedded_hal::digital::InputPin for AnyPin {
 // Implement embedded-hal-async traits for AnyPin
 impl embedded_hal_async::digital::Wait for AnyPin {
     async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
-        // Simple polling implementation - in a real implementation this would use interrupts
-        while self.is_low()? {
-            embassy_time::Timer::after(embassy_time::Duration::from_micros(10)).await;
+        // If already high, return immediately
+        if self.is_high()? {
+            return Ok(());
         }
+
+        // Configure EXTI for rising edge
+        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
+        crate::exti::configure_exti_source(self.pin, self.port);
+        exti_channel.enable_interrupt(crate::exti::Edge::Rising);
+
+        // Wait for interrupt
+        let interrupt = exti_channel.get_interrupt();
+        let waker = crate::interrupt::get_waker(interrupt);
+        waker.wait().await;
+
+        // Clean up
+        exti_channel.disable_interrupt();
         Ok(())
     }
 
     async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
-        // Simple polling implementation - in a real implementation this would use interrupts
-        while self.is_high()? {
-            embassy_time::Timer::after(embassy_time::Duration::from_micros(10)).await;
+        // If already low, return immediately
+        if self.is_low()? {
+            return Ok(());
         }
+
+        // Configure EXTI for falling edge
+        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
+        crate::exti::configure_exti_source(self.pin, self.port);
+        exti_channel.enable_interrupt(crate::exti::Edge::Falling);
+
+        // Wait for interrupt
+        let interrupt = exti_channel.get_interrupt();
+        let waker = crate::interrupt::get_waker(interrupt);
+        waker.wait().await;
+
+        // Clean up
+        exti_channel.disable_interrupt();
         Ok(())
     }
 
     async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_low().await?;
-        self.wait_for_high().await
+        // Configure EXTI for rising edge
+        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
+        crate::exti::configure_exti_source(self.pin, self.port);
+        exti_channel.enable_interrupt(crate::exti::Edge::Rising);
+
+        // Wait for interrupt
+        let interrupt = exti_channel.get_interrupt();
+        let waker = crate::interrupt::get_waker(interrupt);
+        waker.wait().await;
+
+        // Clean up
+        exti_channel.disable_interrupt();
+        Ok(())
     }
 
     async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
-        self.wait_for_high().await?;
-        self.wait_for_low().await
+        // Configure EXTI for falling edge
+        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
+        crate::exti::configure_exti_source(self.pin, self.port);
+        exti_channel.enable_interrupt(crate::exti::Edge::Falling);
+
+        // Wait for interrupt
+        let interrupt = exti_channel.get_interrupt();
+        let waker = crate::interrupt::get_waker(interrupt);
+        waker.wait().await;
+
+        // Clean up
+        exti_channel.disable_interrupt();
+        Ok(())
     }
 
     async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
-        let initial_state = self.is_high()?;
-        loop {
-            if self.is_high()? != initial_state {
-                return Ok(());
-            }
-            embassy_time::Timer::after(embassy_time::Duration::from_micros(10)).await;
-        }
+        // Configure EXTI for both edges
+        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
+        crate::exti::configure_exti_source(self.pin, self.port);
+        exti_channel.enable_interrupt(crate::exti::Edge::RisingFalling);
+
+        // Wait for interrupt
+        let interrupt = exti_channel.get_interrupt();
+        let waker = crate::interrupt::get_waker(interrupt);
+        waker.wait().await;
+
+        // Clean up
+        exti_channel.disable_interrupt();
+        Ok(())
     }
 }
 

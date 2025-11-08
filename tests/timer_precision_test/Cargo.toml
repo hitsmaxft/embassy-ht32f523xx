@@ -1,0 +1,31 @@
+[package]
+name = "timer_precision_test"
+version = "0.1.0"
+edition = "2024"
+authors = ["embassy-async-test <test@example.com>"]
+
+[[bin]]
+name = "timer_precision_test"
+path = "src/main.rs"
+
+[dependencies]
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
+embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-interrupt", "defmt"] }
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true, features = ["print-defmt"] }
+embedded-hal = { workspace = true }
+
+embassy-ht32f523xx = { path = "../../", features = ["rt", "ht32f52352", "defmt", "executor"] }
+ht32-bsp = { path = "../../bsp", features = ["rt", "defmt"] }
+
+# Build dependencies for cargo-binutils (needed for objcopy)
+[build-dependencies]
+cargo-binutils = "0.3"
+
+# Linker configuration
+[profile.release]
+debug = 2
+lto = true
+opt-level = "s"

@@ -21,7 +21,6 @@ Cargo.lock
 .direnv
 .envrc
 
-deps/
 *.bin
 *.hex
 *.elf
