@@ -5,6 +5,8 @@ members = [
     "examples/serial-echo",
     "examples/usb-hid-keyboard",
     "examples/ht32-rmk-60key",
+    "examples/time_driver_simple_test",
+    "tests/test_critical_section",
 ]
 resolver = "2"
 
@@ -23,6 +25,8 @@ ht32f52342 = []
 ht32f52352 = []
 # Runtime support
 rt = ["ht32f523x2/rt", "cortex-m-rt"]
+# Embassy executor support
+executor = ["embassy-executor/arch-cortex-m", "embassy-executor/executor-thread"]
 # Peripheral features
 usb = []
 # Debugging support
@@ -41,6 +45,7 @@ ht32f523x2 = "0.5"
 embassy-executor = "0.9.0"
 embassy-time = "0.5.0"
 embassy-time-driver = "0.2.1"
+embassy-time-queue-utils = "0.3.0"
 embassy-sync = "0.7.2"
 embassy-futures = "0.1.2"
 embassy-usb = "0.5.0"
@@ -67,6 +72,7 @@ ht32f523x2 = "0.5"
 embassy-executor = "0.9.0"
 embassy-time = "0.5.0"
 embassy-time-driver = "0.2.1"
+embassy-time-queue-utils = "0.3.0"
 embassy-sync = "0.7.2"
 embassy-futures = "0.1.2"
 embassy-usb = "0.5.0"

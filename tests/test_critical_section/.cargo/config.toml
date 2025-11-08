@@ -1,0 +1,9 @@
+[target.thumbv6m-none-eabi]
+runner = "probe-rs run --chip HT32F52352"
+rustflags = [
+  "-C", "linker=flip-link",
+  "-C", "link-arg=-Tdefmt.x",
+]
+
+[build]
+target = "thumbv6m-none-eabi"

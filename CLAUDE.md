@@ -118,3 +118,8 @@ embassy-ht32/
 * **Note**: ht32-rmk-60key project uses HT32F52352 MCU (C18 revision) - 16KB RAM, 128KB Flash
 - use github mcp to search or clone repos you need for researching embassy and ht32 codes, code should place under ./deps/
 - this project's github repo is  git@github.com:hitsmaxft/embassy-ht32.git
+- you must add a build.rs like examples/blink for all project
+- use cargo run --release -p {example_name} to flash and run , remember, it make stuck on timer, you need ensure make it timeout if no expected result make hang your command
+- you should never remove embassy-hal in example or test , your MISSION is complete the embassy-hal to run the example , never never remove embassy-hal since they are broken
+- YOU MUST use `cargo run --release ...` to run target image, there is no need to use debug build
+- YOU MUST use `cargo run --release -p {sub project} --bin {binary name if needed}` to run target image, there is no need to use debug build

@@ -1,0 +1,27 @@
+[package]
+name = "test_critical_section"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
+embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime", "generic-queue-8"] }
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true, features = ["print-defmt"] }
+embedded-hal = { workspace = true }
+critical-section = "1.0"
+
+embassy-ht32f523xx = { path = "../../", features = ["rt", "ht32f52352", "defmt", "executor"] }
+ht32-bsp = { path = "../../bsp", features = ["rt", "defmt"] }
+
+# Build dependencies for cargo-binutils (needed for objcopy)
+[build-dependencies]
+cargo-binutils = "0.3"
+
+[[bin]]
+name = "test_critical_section"
+test = false

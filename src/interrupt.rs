@@ -9,39 +9,46 @@ use core::task::Poll;
 
 pub use crate::pac::Interrupt;
 
-// Import cortex_m_rt for interrupt handlers
-#[cfg(feature = "rt")]
-use cortex_m_rt::interrupt;
 
-/// Critical section implementation for defmt
+/// Critical section implementation for Embassy and defmt
 ///
-/// This provides the necessary symbols for defmt logging to work
+/// This provides the necessary symbols for critical section functionality
 /// with the HT32F523xx microcontroller.
+///
+/// Uses a nesting counter approach since critical-section crate uses () as restore state.
+static mut CRITICAL_SECTION_NESTING: u32 = 0;
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn _critical_section_1_0_acquire() -> u32 {
-    // Disable all interrupts using PRIMASK
-    let primask: u32;
-    unsafe {
-        core::arch::asm!(
-            "mrs {0}, PRIMASK",
-            "cpsid i",  // Disable interrupts
-            out(reg) primask,
-            options(pure, nomem, nostack, preserves_flags)
-        );
+pub unsafe extern "C" fn _critical_section_1_0_acquire() -> () {
+    // Use nesting counter for critical section management
+    let nesting = unsafe { CRITICAL_SECTION_NESTING };
+
+    if nesting == 0 {
+        // First entry: disable interrupts
+        unsafe {
+            core::arch::asm!("cpsid i", options(nomem, nostack, preserves_flags));
+        }
     }
-    primask
+
+    unsafe { CRITICAL_SECTION_NESTING = nesting + 1 };
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn _critical_section_1_0_release(token: u32) {
-    // Restore interrupt state from token
-    if token & 0x1 == 0 {
-        // Interrupts were enabled, restore them
-        unsafe {
-            core::arch::asm!("cpsie i", options(nomem, nostack, preserves_flags));
+pub unsafe extern "C" fn _critical_section_1_0_release(_token: ()) {
+    // Decrement nesting counter
+    let nesting = unsafe { CRITICAL_SECTION_NESTING };
+
+    if nesting > 0 {
+        let new_nesting = nesting - 1;
+        unsafe { CRITICAL_SECTION_NESTING = new_nesting };
+
+        // Last exit: restore interrupts
+        if new_nesting == 0 {
+            unsafe {
+                core::arch::asm!("cpsie i", options(nomem, nostack, preserves_flags));
+            }
         }
     }
-    // If interrupts were disabled (token & 0x1 == 1), keep them disabled
 }
 
 /// Default interrupt handler placeholder
@@ -154,14 +161,9 @@ pub fn init() {
     }
 }
 
-// TODO: Interrupt handlers will be implemented in a future update
-// The interrupt waker system is functional for async/await,
-// but actual ISR functions need proper cortex-m-rt integration
-
 // GPTM0 interrupt handler for embassy-time driver
-// TODO: Fix interrupt handler integration with cortex-m-rt
-// #[cfg(feature = "rt")]
-// #[cortex_m_rt::interrupt]
-// unsafe fn GPTM0() {
-//     crate::time_driver::TimeDriver::on_gptm0_interrupt();
-// }
+#[cfg(feature = "rt")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn GPTM0() {
+    crate::time_driver::handle_gptm0_interrupt();
+}
