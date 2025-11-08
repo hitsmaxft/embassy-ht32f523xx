@@ -1,19 +1,17 @@
 [package]
-name = "blink"
+name = "executor_interrupt_test"
 version = "0.1.0"
 edition = "2024"
-authors = ["hitsmaxft <mfthits@gmail.com>"]
-
+authors = ["embassy-async-test <test@example.com>"]
 
 [[bin]]
-name = "blink"
+name = "executor_interrupt_test"
 path = "src/main.rs"
 
 [dependencies]
 cortex-m = { workspace = true }
 cortex-m-rt = { workspace = true }
 embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-interrupt", "defmt"] }
-embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime", "generic-queue-8"] }
 defmt = { workspace = true }
 defmt-rtt = { workspace = true }
 panic-probe = { workspace = true, features = ["print-defmt"] }
@@ -25,3 +23,9 @@ ht32-bsp = { path = "../../bsp", features = ["rt", "defmt"] }
 # Build dependencies for cargo-binutils (needed for objcopy)
 [build-dependencies]
 cargo-binutils = "0.3"
+
+# Linker configuration
+[profile.release]
+debug = 2
+lto = true
+opt-level = "s"

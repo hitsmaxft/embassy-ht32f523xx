@@ -5,11 +5,11 @@
 - [x] 1.4 Confirm integration with Embassy ecosystem works
 
 ## 2. Core Async - Executor Integration
-- [ ] 2.1 Enable `arch-cortex-m` and `executor-interrupt` features in embassy-executor dependency
-- [ ] 2.2 Verify embassy-executor's built-in PendSV handler is properly linked
-- [ ] 2.3 Test embassy-executor features are correctly enabled for Cortex-M
-- [ ] 2.4 Create test example validating task spawning and concurrent execution
-- [ ] 2.5 Test Timer::await functionality with executor integration
+- [x] 2.1 Enable `arch-cortex-m` and `executor-interrupt` features in embassy-executor dependency
+- [x] 2.2 Verify embassy-executor's built-in PendSV handler is properly linked
+- [x] 2.3 Test embassy-executor features are correctly enabled for Cortex-M
+- [x] 2.4 Create test example validating task spawning and concurrent execution
+- [x] 2.5 Test Timer::await functionality with executor integration
 
 ## 3. Time System - Standard Embassy Time Driver
 - [ ] 3.1 Replace custom `trigger_alarm()` with standard `embassy_time::alarm::on_interrupt()`
