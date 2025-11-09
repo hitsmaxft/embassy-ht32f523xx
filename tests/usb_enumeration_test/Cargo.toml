@@ -1,0 +1,20 @@
+[package]
+name = "usb_enumeration_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embassy-ht32f523xx = { path = "../..", features = ["defmt", "executor", "usb"] }
+embassy-executor = { workspace = true }
+embassy-time = { workspace = true }
+embassy-usb = { workspace = true }
+embassy-usb-driver = { workspace = true }
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true }
+
+[[bin]]
+name = "usb_enumeration_test"
+test = false

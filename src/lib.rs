@@ -180,3 +180,6 @@ pub mod prelude {
     pub use crate::time::U32Ext;
     // TODO: Add other exports when modules are completed
 }
+
+#[cfg(feature = "rt")]
+use pac::interrupt;

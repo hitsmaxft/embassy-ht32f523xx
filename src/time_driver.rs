@@ -159,37 +159,38 @@ impl TimeDriver {
     }
 
     // Standard Embassy interrupt handler - called from GPTM0 interrupt
+    // Optimized: Minimize critical section scope to prevent deadlock with USB interrupts
     pub fn on_interrupt(&self) {
         let timer = unsafe { &*crate::pac::Gptm0::ptr() };
 
-        critical_section::with(|cs| {
-            // Read interrupt status
-            let intsr = timer.gptm_intsr().read();
+        // Read interrupt status outside critical section
+        let intsr = timer.gptm_intsr().read();
 
-            // Clear all interrupt flags immediately
-            timer.gptm_intsr().write(|w| {
-                w.uevif().set_bit()    // Clear Update Event flag
-                 .ch0ccif().set_bit()    // Clear Channel 0 flag
-                 .ch1ccif().set_bit()    // Clear Channel 1 flag
-            });
+        // Clear all interrupt flags immediately (outside critical section)
+        timer.gptm_intsr().write(|w| {
+            w.uevif().set_bit()    // Clear Update Event flag
+             .ch0ccif().set_bit()    // Clear Channel 0 flag
+             .ch1ccif().set_bit()    // Clear Channel 1 flag
+        });
 
-            // Handle update event (overflow) interrupt
-            if intsr.uevif().bit() {
-                // Timer overflow occurred - this may affect period tracking
-                // Our overflow detection in now() will handle this
-            }
+        // Handle update event (overflow) interrupt - no critical section needed
+        if intsr.uevif().bit() {
+            // Timer overflow occurred - this may affect period tracking
+            // Our overflow detection in now() will handle this
+        }
 
-            // Handle channel 0 (half-overflow) interrupt
-            if intsr.ch0ccif().bit() {
-                // Half-overflow occurred - may affect period tracking
-            }
+        // Handle channel 0 (half-overflow) interrupt - no critical section needed
+        if intsr.ch0ccif().bit() {
+            // Half-overflow occurred - may affect period tracking
+        }
 
-            // Handle channel 1 (alarm) interrupt
-            if intsr.ch1ccif().bit() {
-                // Alarm interrupt - trigger alarm processing
+        // Handle channel 1 (alarm) interrupt - use minimal critical section
+        if intsr.ch1ccif().bit() {
+            // Only use critical section for the minimal alarm processing
+            critical_section::with(|cs| {
                 self.trigger_alarm(cs);
-            }
-        })
+            });
+        }
     }
 }
 
@@ -241,7 +242,7 @@ pub(crate) fn init(cs: CriticalSection) {
 }
 
 /// Get the time driver instance - used by interrupt handler
-pub fn get_river() -> &'static TimeDriver {
+pub fn get_driver() -> &'static TimeDriver {
     &DRIVER
 }
 

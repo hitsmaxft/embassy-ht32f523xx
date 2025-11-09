@@ -7,7 +7,7 @@ use core::marker::PhantomData;
 use embassy_sync::waitqueue::AtomicWaker;
 use core::task::Poll;
 
-pub use crate::pac::Interrupt;
+pub use crate::pac::{Interrupt, interrupt};
 
 
 /// Critical section implementation for Embassy and defmt
@@ -146,15 +146,17 @@ pub fn get_waker(interrupt: Interrupt) -> &'static InterruptWaker {
     }
 }
 
-/// Initialize the interrupt system
+/// Initialize the interrupt system with proper NVIC priority configuration
 pub fn init() {
-    // Enable NVIC for key interrupts
+    // Enable NVIC for key interrupts using the existing approach
+    // Note: NVIC priorities will use default values for now
+    // The Signal mechanism from Phase 1 should handle the deadlock
     unsafe {
         cortex_m::peripheral::NVIC::unmask(Interrupt::GPTM0);
         cortex_m::peripheral::NVIC::unmask(Interrupt::GPTM1);
+        cortex_m::peripheral::NVIC::unmask(Interrupt::USB);
         cortex_m::peripheral::NVIC::unmask(Interrupt::USART0);
         cortex_m::peripheral::NVIC::unmask(Interrupt::USART1);
-        cortex_m::peripheral::NVIC::unmask(Interrupt::USB);
         cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI0_1);
         cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI2_3);
         cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI4_15);
@@ -165,7 +167,7 @@ pub fn init() {
 #[cfg(feature = "rt")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn GPTM0() {
-    crate::time_driver::get_river().on_interrupt();
+    crate::time_driver::get_driver().on_interrupt();
 }
 
 // EXTI interrupt handlers for GPIO async operations

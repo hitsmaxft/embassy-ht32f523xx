@@ -10,6 +10,7 @@ members = [
     "tests/test_critical_section",
     "tests/timer_precision_test",
     "tests/async_gpio_test",
+    "tests/usb_enumeration_test",
 ]
 resolver = "2"
 
@@ -31,7 +32,7 @@ rt = ["ht32f523x2/rt", "cortex-m-rt"]
 # Embassy executor support
 executor = ["embassy-executor/arch-cortex-m", "embassy-executor/executor-interrupt", "embassy-executor/executor-thread"]
 # Peripheral features
-usb = []
+usb = ["rt"]
 # Debugging support
 defmt = ["dep:defmt", "dep:defmt-rtt"]
 
@@ -44,7 +45,8 @@ embedded-hal-async = "1.0"
 embedded-hal-nb = "1.0"
 nb = "1.0"
 #ht32f523x2 = { path = "deps/ht32f523x2" }
-ht32f523x2 = "0.5"
+# ht32f523x2 = "0.5"
+ht32f523x2 = { git = "https://github.com/hitsmaxft/ht32f523x2.git" }
 embassy-executor = "0.9.0"
 embassy-time = "0.5.0"
 embassy-time-driver = "0.2.1"
@@ -71,7 +73,7 @@ embedded-hal-async = "1.0"
 embedded-hal-nb = "1.0"
 nb = "1.0"
 #ht32f523x2 = { path = "deps/ht32f523x2" }
-ht32f523x2 = "0.5"
+ht32f523x2 = { git = "https://github.com/hitsmaxft/ht32f523x2.git" }
 embassy-executor = "0.9.0"
 embassy-time = "0.5.0"
 embassy-time-driver = "0.2.1"

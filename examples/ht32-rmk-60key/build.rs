@@ -24,13 +24,13 @@ fn main() {
     let out = &PathBuf::from(env::var_os("OUT_DIR").unwrap());
     File::create(out.join("memory.x"))
         .unwrap()
-        .write_all(include_bytes!("memory_minimal.x"))
+        .write_all(include_bytes!("../../memory_ht32f52352.x"))
         .unwrap();
     println!("cargo:rustc-link-search={}", out.display());
 
     // Only re-run the build script when memory.x is changed,
     // instead of when any part of the source code changes.
-    println!("cargo:rerun-if-changed=memory_minimal.x");
+    println!("cargo:rerun-if-changed=../../memory_ht32f52352.x");
 
     // Generate vial config at the root of project
     println!("cargo:rerun-if-changed=vial.json");

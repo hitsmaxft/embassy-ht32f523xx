@@ -80,6 +80,9 @@ pub fn init(config: Config) -> Clocks {
     // Enable GPIO clocks by default
     enable_gpio_clocks(ckcu);
 
+    // Configure USB clock divider if needed
+    configure_usb_clock(ckcu, clocks.sys_clk);
+
     clocks
 }
 
@@ -267,11 +270,51 @@ fn enable_gpio_clocks(ckcu: &crate::pac::ckcu::RegisterBlock) {
          .pben().set_bit()  // Enable GPIOB
          .pcen().set_bit()  // Enable GPIOC
          .pden().set_bit()  // Enable GPIOD
+         .usben().set_bit() // Enable USB peripheral clock
     });
 
     // Enable AFIO clock (AFIO is on APB bus)
     ckcu.apbccr0().modify(|_, w| {
         w.afioen().set_bit() // Enable AFIO
+    });
+
+    // Enable timer clocks (Timers are on APB bus)
+    ckcu.apbccr1().modify(|_, w| {
+        w.gptm0en().set_bit() // Enable GPTM0 for embassy-time
+         .gptm1en().set_bit() // Enable GPTM1
+    });
+}
+
+/// Configure USB clock divider to ensure 48MHz USB clock
+fn configure_usb_clock(ckcu: &crate::pac::ckcu::RegisterBlock, sys_clk: Hertz) {
+    // USB requires 48MHz clock
+    const USB_TARGET_FREQ: u32 = 48_000_000;
+
+    let sys_freq = sys_clk.to_hz();
+
+    // Configure USB prescaler (USBPRE bits 22:23 in GCFGR)
+    // USBPRE values: 0=1:1, 1=1.5:1, 2=2:1, 3=2.5:1
+    let usbpre_val = if sys_freq == USB_TARGET_FREQ {
+        0 // 1:1 divider - no division needed
+    } else if sys_freq == USB_TARGET_FREQ * 3 / 2 {
+        1 // 1.5:1 divider
+    } else if sys_freq == USB_TARGET_FREQ * 2 {
+        2 // 2:1 divider
+    } else if sys_freq == USB_TARGET_FREQ * 5 / 2 {
+        3 // 2.5:1 divider
+    } else {
+        // For other frequencies, try to get closest to 48MHz
+        if sys_freq > USB_TARGET_FREQ * 2 {
+            2 // Use 2:1 divider for frequencies > 96MHz
+        } else if sys_freq > USB_TARGET_FREQ {
+            1 // Use 1.5:1 divider for 72-96MHz
+        } else {
+            0 // Use 1:1 for frequencies <= 48MHz
+        }
+    };
+
+    ckcu.gcfgr().modify(|_, w| unsafe {
+        w.usbpre().bits(usbpre_val)
     });
 }
 
