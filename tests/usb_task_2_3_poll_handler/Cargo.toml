@@ -1,0 +1,24 @@
+[package]
+name = "usb_task_2_3_poll_handler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embassy-ht32f523xx = { path = "../..", features = ["defmt", "executor", "usb"] }
+embassy-executor = { workspace = true }
+embassy-time = { workspace = true }
+embassy-futures= { workspace = true }
+embassy-usb = { workspace = true }
+embassy-usb-driver = { workspace = true }
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true }
+static_cell = "2"
+portable-atomic = { version = "1.0", features = ["critical-section"] }
+critical-section = { workspace = true }
+
+[[bin]]
+name = "usb_task_2_3_poll_handler"
+test = false
