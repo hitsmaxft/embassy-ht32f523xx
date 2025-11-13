@@ -1,0 +1,33 @@
+[package]
+name = "usb_task_4_2_serial_communication"
+version = "0.1.0"
+edition = "2021"
+authors = ["Embassy-ht32 Contributors"]
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "usb_serial_test"
+path = "src/main.rs"
+
+[dependencies]
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
+embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-interrupt", "defmt"] }
+embassy-time = { workspace = true, features = ["defmt"] }
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true, features = ["print-defmt"] }
+embedded-hal = { workspace = true }
+embassy-usb = { workspace = true }
+embassy-usb-driver = { workspace = true }
+embassy-futures = { workspace = true }
+embassy-sync = { workspace = true }
+static_cell = "2"
+portable-atomic = { version = "1.0", features = ["critical-section"] }
+critical-section = { workspace = true }
+
+embassy-ht32f523xx = { workspace = true, features = ["rt", "usb", "ht32f52352"] }
+ht32-bsp = { path = "../../bsp", features = ["rt"] }
+
+# For USB serial CDC-ACM implementation
+heapless = "0.8"

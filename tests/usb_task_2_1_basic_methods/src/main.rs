@@ -43,13 +43,14 @@ async fn usb_basic_methods_test(mut p: embassy_ht32f523xx::Peripherals) {
     Timer::after(Duration::from_millis(100)).await;
     info!("✅ Timer OK!");
 
-    // Configure USB pins PA11 (DM) and PA12 (DP) as AF10
-    let dm_pin: UsbDm<'A', 11> = p.gpioa.pa11().into_alternate_function::<10>();
-    let dp_pin: UsbDp<'A', 12> = p.gpioa.pa12().into_alternate_function::<10>();
+    // Configure USB pins PC6 (DM) and PC7 (DP) as AF10
+    // CRITICAL: Based on hardware layout - PA11/PA12 are wrong for this board!
+    let dm_pin: UsbDm<'C', 6> = p.gpioc.pc6().into_alternate_function::<10>();
+    let dp_pin: UsbDp<'C', 7> = p.gpioc.pc7().into_alternate_function::<10>();
     let usb_pins = UsbPins::new(dm_pin, dp_pin);
 
     let driver = init_usb_with_pins(p.usb, usb_pins, UsbConfig::default());
-    info!("✅ Driver created with USB pins configured!");
+    info!("✅ USB driver created with USB pins configured as AF10 - PC6(PC), PC7(PC)");
 
     let mut config = embassy_usb::Config::new(0x16c0, 0x05dc);
     config.manufacturer = Some("Embassy-ht32");

@@ -12,7 +12,6 @@
 
 use std::fs::File;
 use std::io::Write;
-use std::path::Path;
 use std::path::PathBuf;
 use std::{env};
 
@@ -38,7 +37,6 @@ fn main() {
     // Set the linker script to the one provided by cortex-m-rt.
     println!("cargo:rustc-link-arg=-Tlink.x");
 
-    // Disable defmt completely for now to avoid linking issues
     println!("cargo:rustc-link-arg=-Tdefmt.x");
 
     // Disable flip-link to reduce build complexity

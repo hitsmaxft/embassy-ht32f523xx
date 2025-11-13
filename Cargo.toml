@@ -4,6 +4,8 @@ members = [
     "examples/blink",
     "examples/serial-echo",
     "examples/usb-hid-keyboard",
+    "examples/usb-rtt-test",
+    "examples/usb-serial-test",
     "examples/ht32-rmk-60key",
     "tests/time_driver_simple_test",
     "tests/executor_interrupt_test",
@@ -11,6 +13,12 @@ members = [
     "tests/timer_precision_test",
     "tests/async_gpio_test",
     "tests/usb_enumeration_test",
+    "tests/usb_task_2_1_basic_methods",
+    "tests/usb_task_2_2_buffer_io",
+    "tests/usb_task_2_3_poll_handler",
+    "tests/usb_task_4_2_serial_communication",
+    "tests/usb_basic_check",
+    "tests/usb_nvic_interrupt_test",
 ]
 resolver = "2"
 

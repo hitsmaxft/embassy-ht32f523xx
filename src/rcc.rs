@@ -5,6 +5,30 @@
 use crate::pac::Ckcu;
 use crate::time::Hertz;
 
+// Use defmt logging when available
+#[cfg(feature = "defmt")]
+use defmt::{debug, error, info, warn};
+
+#[cfg(not(feature = "defmt"))]
+macro_rules! info {
+    ($($arg:tt)*) => {};
+}
+
+#[cfg(not(feature = "defmt"))]
+macro_rules! debug {
+    ($($arg:tt)*) => {};
+}
+
+#[cfg(not(feature = "defmt"))]
+macro_rules! warn {
+    ($($arg:tt)*) => {};
+}
+
+#[cfg(not(feature = "defmt"))]
+macro_rules! error {
+    ($($arg:tt)*) => {};
+}
+
 /// Clock configuration
 pub struct Config {
     /// System clock frequency
@@ -22,7 +46,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            sys_clk: Some(Hertz::mhz(48)),  // Default to 48MHz
+            sys_clk: Some(Hertz::mhz(48)),  // Default to 96MHz for USB compatibility (96MHz/2 = 48MHz USB)
             ahb_clk: None,  // Same as sys_clk by default
             apb_clk: None,  // Same as sys_clk by default
             use_hse: false, // Use HSI by default
@@ -201,6 +225,32 @@ fn calculate_pll_params_ht32(input_freq: u32, target_freq: u32) -> (u8, u8) {
     // PFBD: 0-15 (representing multiplier 2-17)
     // POTD: 0-3 (representing divider 1,2,4,8)
 
+    // USB-COMPATIBLE PRIORITY: For USB operation, we prefer specific frequencies
+    // that can divide cleanly to 48MHz USB clock: 48MHz, 72MHz, 96MHz, 144MHz
+    const USB_COMPATIBLE_FREQS: &[u32] = &[48_000_000, 72_000_000, 96_000_000, 144_000_000];
+
+    // First, try to hit an exact USB-compatible frequency
+    for &usb_freq in USB_COMPATIBLE_FREQS {
+        for potd in 0..=3u8 {
+            let divisor = 1u32 << potd;
+            for pfbd in 0..=15u8 {
+                let multiplier = pfbd as u32 + 2;
+                let output_freq = input_freq * multiplier / divisor;
+
+                if output_freq == usb_freq {
+                    // Ensure VCO frequency is within bounds (relaxed for USB compatibility)
+                    let vco_freq = input_freq * multiplier;
+                    if vco_freq >= 48_000_000 && vco_freq <= 200_000_000 {
+                        info!("🔧 PLL_USB_COMPAT: Found exact USB-compatible {}MHz (PFBD={}, POTD={}, VCO={}MHz)",
+                               output_freq / 1_000_000, pfbd, potd, vco_freq / 1_000_000);
+                        return (pfbd, potd);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback to original algorithm if no exact USB-compatible frequency found
     let mut best_error = u32::MAX;
     let mut best_pfbd = 6; // Default: 8MHz * ((6+2)/1) = 64MHz, but limited by max freq
     let mut best_potd = 1; // Default: divide by 2 -> 32MHz
@@ -285,37 +335,69 @@ fn enable_gpio_clocks(ckcu: &crate::pac::ckcu::RegisterBlock) {
     });
 }
 
-/// Configure USB clock divider to ensure 48MHz USB clock
+/// Configure USB clock divider to ensure exactly 48MHz USB clock
+///
+/// CRITICAL: USB requires EXACTLY 48MHz (±0.25%) for proper operation
+/// HT32 uses PLL output divided by USB prescaler: USB_CLK = PLL_CLK / USB_PRESCALER
+///
+/// Recommended configuration based on HT32 documentation:
+/// - PLL: 144MHz (8MHz HSE * 18 or equivalent from HSI)
+/// - USB_PRESCALER: 3 (144MHz / 3 = 48MHz)
 fn configure_usb_clock(ckcu: &crate::pac::ckcu::RegisterBlock, sys_clk: Hertz) {
-    // USB requires 48MHz clock
+    // USB requires EXACTLY 48MHz clock (±0.25% tolerance)
     const USB_TARGET_FREQ: u32 = 48_000_000;
 
     let sys_freq = sys_clk.to_hz();
 
-    // Configure USB prescaler (USBPRE bits 22:23 in GCFGR)
+    // Calculate and validate USB clock configuration
+    // We need: SYS_FREQ / USB_PRESCALER = 48MHz
     // USBPRE values: 0=1:1, 1=1.5:1, 2=2:1, 3=2.5:1
-    let usbpre_val = if sys_freq == USB_TARGET_FREQ {
-        0 // 1:1 divider - no division needed
-    } else if sys_freq == USB_TARGET_FREQ * 3 / 2 {
-        1 // 1.5:1 divider
-    } else if sys_freq == USB_TARGET_FREQ * 2 {
-        2 // 2:1 divider
-    } else if sys_freq == USB_TARGET_FREQ * 5 / 2 {
-        3 // 2.5:1 divider
+    let (usbpre_val, actual_usb_freq) = if sys_freq == 144_000_000 {
+        // Ideal case: 144MHz / 3 = 48MHz USB
+        (3, USB_TARGET_FREQ)
+    } else if sys_freq == 96_000_000 {
+        // Alternative: 96MHz / 2 = 48MHz USB
+        (2, USB_TARGET_FREQ)
+    } else if sys_freq == 72_000_000 {
+        // Alternative: 72MHz / 1.5 = 48MHz USB
+        (1, USB_TARGET_FREQ)
+    } else if sys_freq == USB_TARGET_FREQ {
+        // Direct: 48MHz / 1 = 48MHz USB
+        (0, USB_TARGET_FREQ)
     } else {
-        // For other frequencies, try to get closest to 48MHz
-        if sys_freq > USB_TARGET_FREQ * 2 {
-            2 // Use 2:1 divider for frequencies > 96MHz
-        } else if sys_freq > USB_TARGET_FREQ {
-            1 // Use 1.5:1 divider for 72-96MHz
+        // WARNING: Unsupported frequency for USB!
+        // Try to get closest possible, but enumeration will likely fail
+        warn!("⚠️  USB_CLOCK_WARN: System clock {}MHz cannot provide exact 48MHz USB clock", sys_freq / 1_000_000);
+        warn!("⚠️  USB_CLOCK_WARN: USB enumeration may fail - consider using 48MHz, 72MHz, 96MHz, or 144MHz system clock");
+
+        // Fallback: get as close as possible
+        if sys_freq > 144_000_000 {
+            (3, sys_freq / 3)
+        } else if sys_freq > 96_000_000 {
+            (2, sys_freq / 2)
+        } else if sys_freq > 48_000_000 {
+            (1, sys_freq * 2 / 3) // Approximate 1.5:1
         } else {
-            0 // Use 1:1 for frequencies <= 48MHz
+            (0, sys_freq) // Direct, but likely not 48MHz
         }
     };
 
+    // Configure USB prescaler (USBPRE bits 22:23 in GCFGR)
+    // USBPRE values: 0=1:1, 1=1.5:1, 2=2:1, 3=2.5:1
     ckcu.gcfgr().modify(|_, w| unsafe {
         w.usbpre().bits(usbpre_val)
     });
+
+    // Log USB clock configuration for debugging
+    if actual_usb_freq == USB_TARGET_FREQ {
+        info!("🔧 USB_CLOCK: Configured exact 48MHz USB clock (sys: {}MHz, prescaler: {})",
+              sys_freq / 1_000_000, usbpre_val);
+    } else {
+        error!("❌ USB_CLOCK_ERROR: USB clock = {}MHz (target: 48MHz) - enumeration may fail!",
+               actual_usb_freq / 1_000_000);
+        error!("❌ USB_CLOCK_ERROR: System clock {}MHz with prescaler {} cannot produce 48MHz USB",
+               sys_freq / 1_000_000, usbpre_val);
+    }
 }
 
 /// RCC peripheral handle

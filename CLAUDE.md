@@ -129,3 +129,9 @@ embassy-ht32/
 - YOU MUST use '{test_name} start, if not `{task name}_OK' prints, test failed' , then print 'test passed {task name}_OK' after
 timer ends, to clearly testing timer is end as exepect,  with defmt in timer tests
 - IMPORTAN! never treat 'starting..' 'now..' logs as a symbol of success, that's lying
+- never add files while git commit , it should be add by user
+- never liying about unfinished task
+- Only tested or user permitted tasks can marked as completed
+- for completing openspec tasks , the rule should be: Implementation ≠ Completion. Testing = Completion.
+- examples/blink/build.rs is and example build script for test and example projects
+- for detecting device on host side , use cyme to check if device show up

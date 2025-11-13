@@ -11,7 +11,7 @@
 //! - Total: 8 endpoints (1 control + 7 configurable)
 
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_sync::signal::Signal;
@@ -23,7 +23,30 @@ use embassy_usb_driver::{
 
 use crate::pac;
 use crate::gpio::{Pin, mode};
-use crate::interrupt;
+
+// Use defmt logging when available, otherwise provide stub implementations
+#[cfg(feature = "defmt")]
+use defmt::{debug, error, info, warn};
+
+#[cfg(not(feature = "defmt"))]
+macro_rules! info {
+    ($($arg:tt)*) => {};
+}
+
+#[cfg(not(feature = "defmt"))]
+macro_rules! debug {
+    ($($arg:tt)*) => {};
+}
+
+#[cfg(not(feature = "defmt"))]
+macro_rules! warn {
+    ($($arg:tt)*) => {};
+}
+
+#[cfg(not(feature = "defmt"))]
+macro_rules! error {
+    ($($arg:tt)*) => {};
+}
 
 // HT32F52352 USB Controller Hardware Specifications
 const MAX_EP_COUNT: usize = 8;          // 1 control EP + 7 configurable EPs
@@ -68,22 +91,28 @@ impl Usb {
 /// USB driver implementation
 pub struct Driver<'d> {
     phantom: PhantomData<&'d ()>,
-    alloc_in: AtomicBool,
-    alloc_out: AtomicBool,
+    allocated_eps: AtomicU16, // Bit mask for allocated endpoints (bit 0 = EP0, bit 1 = EP1, etc.)
 }
 
 impl<'d> Driver<'d> {
     /// Create a new USB driver instance
     pub fn new(_usb: Usb, config: Config) -> Self {
+        info!("🔌 USB_DRIVER_START: Initializing HT32F52352 USB driver");
+
         let usb = unsafe { &*pac::Usb::ptr() };
+
+        // Read USB CSR to check hardware status
+        let csr = usb.csr().read();
+        info!("🔌 USB_DRIVER_CSR: Initial CSR state = {:#010x}", csr.bits());
 
         // Initialize USB hardware
         initialize_usb_hardware(usb, &config);
 
+        info!("✅ USB_DRIVER_INIT: USB hardware initialization completed");
+
         Self {
             phantom: PhantomData,
-            alloc_in: AtomicBool::new(false),
-            alloc_out: AtomicBool::new(false),
+            allocated_eps: AtomicU16::new(0),
         }
     }
 }
@@ -97,6 +126,7 @@ pub struct Bus<'d> {
     ep_in_wakers: [AtomicWaker; MAX_EP_COUNT], // IN endpoint wakers
     ep_out_wakers: [AtomicWaker; MAX_EP_COUNT], // OUT endpoint wakers
     bus_waker: AtomicWaker,
+    power_detected_sent: AtomicBool, // Track if PowerDetected event has been sent
 }
 
 impl<'d> Bus<'d> {
@@ -108,6 +138,7 @@ impl<'d> Bus<'d> {
             ep_in_wakers: [NEW_AW; MAX_EP_COUNT], // Full waker arrays
             ep_out_wakers: [NEW_AW; MAX_EP_COUNT], // Full waker arrays
             bus_waker: AtomicWaker::new(),
+            power_detected_sent: AtomicBool::new(false),
         }
     }
 }
@@ -141,12 +172,25 @@ impl<'d> embassy_usb_driver::Driver<'d> for Driver<'d> {
         max_packet_size: u16,
         interval: u8,
     ) -> Result<Self::EndpointIn, EndpointAllocError> {
-        if self.alloc_in.load(Ordering::Relaxed) {
+        // Use suggested address or default based on endpoint type
+        let addr = ep_addr.unwrap_or_else(|| {
+            match ep_type {
+                EndpointType::Interrupt => EndpointAddress::from_parts(1, Direction::In), // EP1 IN for CDC notifications
+                EndpointType::Bulk => EndpointAddress::from_parts(3, Direction::In), // EP3 IN for CDC data
+                EndpointType::Isochronous => EndpointAddress::from_parts(5, Direction::In), // EP5 IN for isochronous
+                EndpointType::Control => EndpointAddress::from_parts(0, Direction::In), // EP0 (control)
+            }
+        });
+
+        // Check if endpoint is already allocated
+        let ep_mask = 1u16 << addr.index();
+        let current_allocated = self.allocated_eps.load(Ordering::Relaxed);
+        if current_allocated & ep_mask != 0 {
             return Err(EndpointAllocError);
         }
-        self.alloc_in.store(true, Ordering::Relaxed);
 
-        let addr = ep_addr.unwrap_or(EndpointAddress::from_parts(1, Direction::In));
+        // Mark endpoint as allocated
+        self.allocated_eps.store(current_allocated | ep_mask, Ordering::Relaxed);
 
         // Configure hardware endpoint
         configure_endpoint_hardware(addr, ep_type, max_packet_size);
@@ -170,12 +214,25 @@ impl<'d> embassy_usb_driver::Driver<'d> for Driver<'d> {
         max_packet_size: u16,
         interval: u8,
     ) -> Result<Self::EndpointOut, EndpointAllocError> {
-        if self.alloc_out.load(Ordering::Relaxed) {
+        // Use suggested address or default based on endpoint type
+        let addr = ep_addr.unwrap_or_else(|| {
+            match ep_type {
+                EndpointType::Bulk => EndpointAddress::from_parts(2, Direction::Out), // EP2 OUT for CDC data
+                EndpointType::Isochronous => EndpointAddress::from_parts(4, Direction::Out), // EP4 OUT for isochronous
+                EndpointType::Interrupt => EndpointAddress::from_parts(6, Direction::Out), // EP6 OUT for interrupt
+                EndpointType::Control => EndpointAddress::from_parts(0, Direction::Out), // EP0 (control)
+            }
+        });
+
+        // Check if endpoint is already allocated
+        let ep_mask = 1u16 << addr.index();
+        let current_allocated = self.allocated_eps.load(Ordering::Relaxed);
+        if current_allocated & ep_mask != 0 {
             return Err(EndpointAllocError);
         }
-        self.alloc_out.store(true, Ordering::Relaxed);
 
-        let addr = ep_addr.unwrap_or(EndpointAddress::from_parts(1, Direction::Out));
+        // Mark endpoint as allocated
+        self.allocated_eps.store(current_allocated | ep_mask, Ordering::Relaxed);
 
         // Configure hardware endpoint
         configure_endpoint_hardware(addr, ep_type, max_packet_size);
@@ -193,6 +250,8 @@ impl<'d> embassy_usb_driver::Driver<'d> for Driver<'d> {
     }
 
     fn start(self, control_max_packet_size: u16) -> (Self::Bus, Self::ControlPipe) {
+        info!("🚀 USB_DRIVER_START: Starting USB driver with control max packet size = {}", control_max_packet_size);
+
         let bus = Bus::new();
         let control_pipe = ControlPipe {
             _phantom: PhantomData,
@@ -200,6 +259,8 @@ impl<'d> embassy_usb_driver::Driver<'d> for Driver<'d> {
 
         // Configure EP0 for control transfers
         configure_control_endpoint(control_max_packet_size);
+
+        info!("✅ USB_DRIVER_READY: USB driver started successfully with EP0 configured");
 
         (bus, control_pipe)
     }
@@ -260,21 +321,100 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
     }
 
     async fn data_out(&mut self, buf: &mut [u8], _first: bool, _last: bool) -> Result<usize, EndpointError> {
-        // Read control data from hardware
-        Ok(buf.len().min(64))
+        // Read control OUT data from hardware (EP0)
+        info!("📥 CONTROL_DATA_OUT: Reading {} bytes from control endpoint", buf.len());
+
+        let usb = unsafe { &*pac::Usb::ptr() };
+
+        // Wait for data to be available (not NAK and not stalled)
+        let mut timeout = 1000;
+        while (usb.ep0csr().read().nakrx().bit_is_set() || usb.ep0csr().read().stlrx().bit_is_set()) && timeout > 0 {
+            embassy_futures::yield_now().await;
+            timeout -= 1;
+        }
+
+        if timeout == 0 {
+            warn!("⚠️  CONTROL_DATA_OUT: Timeout waiting for data");
+            return Ok(0);
+        }
+
+        // Read data from EP0 SRAM buffer
+        let ep0tcr = usb.ep0tcr().read();
+        let data_len = ep0tcr.rxcnt().bits() as usize;
+        let actual_len = buf.len().min(data_len);
+
+        if actual_len > 0 {
+            // EP0 RX buffer is at offset 0x048 in USB SRAM
+            let buffer_addr = EP0_RX_OFFSET as usize;
+
+            // Use the new USB SRAM access functions
+            read_usb_sram_bytes(buffer_addr, &mut buf[..actual_len]);
+
+            // Set NAKRX to indicate data has been read
+            usb.ep0csr().modify(|_, w| w.nakrx().set_bit());
+
+            info!("📥 CONTROL_DATA_OUT: Successfully read {} bytes", actual_len);
+        }
+
+        Ok(actual_len)
     }
 
-    async fn data_in(&mut self, _data: &[u8], _first: bool, _last: bool) -> Result<(), EndpointError> {
-        // Write control data to hardware
+    async fn data_in(&mut self, data: &[u8], _first: bool, _last: bool) -> Result<(), EndpointError> {
+        // Write control IN data to hardware (EP0)
+        info!("📤 CONTROL_DATA_IN: Writing {} bytes to control endpoint", data.len());
+
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        let usb = unsafe { &*pac::Usb::ptr() };
+
+        // Wait for EP0 to be ready for transmission
+        let mut timeout = 1000;
+        while !usb.ep0csr().read().naktx().bit_is_set() && timeout > 0 {
+            embassy_futures::yield_now().await;
+            timeout -= 1;
+        }
+
+        if timeout == 0 {
+            warn!("⚠️  CONTROL_DATA_IN: Timeout waiting for TX ready");
+            return Err(EndpointError::BufferOverflow);
+        }
+
+        // Write data to EP0 TX buffer in USB SRAM
+        let buffer_addr = EP0_TX_OFFSET as usize;
+        let data_len = data.len().min(64);
+
+        if buffer_addr + data_len <= EP_SRAM_SIZE {
+            // Use the new USB SRAM access functions
+            write_usb_sram_bytes(buffer_addr, &data[..data_len]);
+
+            // Set TX count and clear NAKTX to start transmission
+            usb.ep0tcr().modify(|_, w| unsafe {
+                w.txcnt().bits(data_len as u8)
+            });
+            usb.ep0csr().modify(|_, w| w.naktx().clear_bit());
+
+            info!("📤 CONTROL_DATA_IN: Successfully wrote {} bytes", data_len);
+        } else {
+            return Err(EndpointError::BufferOverflow);
+        }
+
         Ok(())
     }
 
     async fn accept(&mut self) {
-        // Send ACK to host
+        // Send ACK to host - clear STALL bit for EP0
+        info!("✅ CONTROL_ACCEPT: Sending ACK to host");
+        let usb = unsafe { &*pac::Usb::ptr() };
+        usb.ep0csr().modify(|_, w| w.stlrx().clear_bit());
     }
 
     async fn reject(&mut self) {
-        // Send STALL to host
+        // Send STALL to host - set STALL bit for EP0
+        warn!("❌ CONTROL_REJECT: Sending STALL to host");
+        let usb = unsafe { &*pac::Usb::ptr() };
+        usb.ep0csr().modify(|_, w| w.stlrx().set_bit());
     }
 
     async fn accept_set_address(&mut self, addr: u8) {
@@ -285,33 +425,36 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
 
 impl<'d> embassy_usb_driver::Bus for Bus<'d> {
     async fn poll(&mut self) -> Event {
-        // Poll USB hardware for events
-        poll_usb_events().await
+        let event = poll_usb_events(self).await;
+        event
     }
 
     fn endpoint_set_stalled(&mut self, ep_addr: EndpointAddress, stalled: bool) {
-        // Set/clear endpoint stall
+        debug!("🔧 USB_EP_STALL: Setting endpoint {} stalled = {}", ep_addr.index(), stalled);
         set_endpoint_stall(ep_addr, stalled);
     }
 
     fn endpoint_is_stalled(&mut self, ep_addr: EndpointAddress) -> bool {
-        // Check if endpoint is stalled
-        get_endpoint_stall(ep_addr)
+        let stalled = get_endpoint_stall(ep_addr);
+        debug!("🔧 USB_EP_STALL_CHECK: Endpoint {} stalled = {}", ep_addr.index(), stalled);
+        stalled
     }
 
     fn endpoint_set_enabled(&mut self, ep_addr: EndpointAddress, enabled: bool) {
-        // Enable/disable endpoint
+        debug!("🔧 USB_EP_ENABLE: Setting endpoint {} enabled = {}", ep_addr.index(), enabled);
         set_endpoint_enabled(ep_addr, enabled);
     }
 
     async fn enable(&mut self) {
-        // Enable USB device
+        info!("🚀 USB_BUS_ENABLE: Enabling USB device");
         enable_usb_device();
+        info!("✅ USB_BUS_ENABLED: USB device enabled successfully");
     }
 
     async fn disable(&mut self) {
-        // Disable USB device
+        warn!("⚠️  USB_BUS_DISABLE: Disabling USB device");
         disable_usb_device();
+        info!("✅ USB_BUS_DISABLED: USB device disabled");
     }
 
     async fn remote_wakeup(&mut self) -> Result<(), Unsupported> {
@@ -338,31 +481,72 @@ impl Default for Config {
 
 // Hardware-specific implementation functions
 fn initialize_usb_hardware(usb: &crate::pac::usb::RegisterBlock, config: &Config) {
-    // Initialize USB hardware registers for HT32F52352
+    info!("🔌 USB_HW_INIT: Starting USB hardware initialization");
 
     // Reset USB peripheral to ensure clean state
     usb.csr().modify(|_, w| w.fres().set_bit());
     usb.csr().modify(|_, w| w.fres().clear_bit());
 
-    // Enable USB power (clear PDWN bit)
-    usb.csr().modify(|_, w| w.pdwn().clear_bit());
+    // Step 1: USB Power Up configuration 
+    // CSR配置: DPWKEN, DPPUEN, LPMODE, PDWN (ALL enabled initially)
+    usb.csr().modify(|_, w| unsafe {
+        w.dpwken().set_bit()   // DP唤醒使能 (DP wake enable)
+         .dppuen().set_bit()   // DP上拉使能 (DP pull-up enable) - CRITICAL for enumeration!
+         .lpmode().set_bit()   // 低功耗模式 (low power mode)
+         .pdwn().set_bit()     // 掉电模式 (power down mode)
+    });
 
-    // VBUS detection may not be available in HT32F52352 the same way
-    // For now, this is a placeholder - actual VBUS detection would depend on hardware
-    if config.vbus_detection {
-        // Placeholder for VBUS detection setup
-    }
-
-    // Enable VBUS detect interrupt if requested
-    if config.enable_vbus_detect {
-        // Placeholder for VBUS interrupt enable
-        // This may not be directly supported in HT32F52352
-    }
-
-    // Clear any pending interrupts
+    // Step 2: Clear all pending interrupts
     unsafe {
         usb.isr().write(|w| w.bits(0xFFFFFFFF));
     }
+
+    // Step 3: Disable DP wake (normal operation)
+    // This transitions USB from powered-up to active state
+    usb.csr().modify(|_, w| unsafe {
+        w.dpwken().clear_bit()  // Disable DP wake - USB now in active operation mode
+    });
+
+    // Step 4: Enable USB interrupts at peripheral level
+    // Following ChibiOS: USBIER_UGIE | USBIER_SOFIE | USBIER_URSTIE | USBIER_RSMIE | USBIER_SUSPIE | USBIER_EP0IE
+    usb.ier().modify(|_, w| {
+        w.ugie().set_bit()     // USB全局中断使能 (USB global interrupt enable) - CRITICAL!
+         .sofie().set_bit()    // 帧起始中断使能 (Start of Frame interrupt)
+         .urstie().set_bit()   // USB复位中断使能 (USB reset interrupt) - CRITICAL for enumeration
+         .rsmie().set_bit()    // 恢复中断使能 (Resume interrupt)
+         .suspie().set_bit()   // 挂起中断使能 (Suspend interrupt)
+         .ep0ie().set_bit()    // 端点0中断使能 (Endpoint 0 interrupt) - CRITICAL for control transfers
+    });
+
+    // Note: DPPUEN (DP pull-up) is enabled in Step 1 and maintained in Step 3
+    // The pull-up resistor signals to the host that a USB device is connected and ready for enumeration
+
+    // Enable USB interrupt in NVIC with appropriate priority
+    // This is the CRITICAL missing piece - USB interrupts were never enabled in NVIC!
+    unsafe {
+        // Raw NVIC register access - interrupt 29 is USB
+        let nvic = 0xE000E100 as *mut u32;
+
+        // Enable USB interrupt in ISER (Interrupt Set-Enable Register)
+        // USB is interrupt 29, so bit 29 in ISER[0]
+        let iser0 = nvic.add(0x100); // ISER[0] offset
+        iser0.write_volatile(iser0.read_volatile() | (1 << 29));
+
+        // Set USB interrupt priority in IPR (Interrupt Priority Register)
+        // USB (29) is in IPR[7] (29/4 = 7, remainder 1)
+        let ipr7 = nvic.add(0x400 + 7 * 4); // IPR base offset + register * 4
+        let current = ipr7.read_volatile();
+        // USB uses bits 8-15 of IPR[7] (since 29 % 4 = 1, so 1*8 = 8)
+        let priority_mask = !(0xFF << 8);
+        let priority_value = 64 << 8; // Priority 64
+        ipr7.write_volatile((current & priority_mask) | priority_value);
+
+        // Clear any pending USB interrupt in ICPR (Interrupt Clear-Pending Register)
+        let icpr0 = nvic.add(0x180); // ICPR[0] offset
+        icpr0.write_volatile(1 << 29);
+    };
+
+    info!("🔌 USB_HW_INIT: USB hardware and NVIC interrupts initialized successfully");
 }
 
 /// Initialize USB with pins
@@ -389,61 +573,110 @@ fn configure_endpoint_hardware(addr: EndpointAddress, ep_type: EndpointType, max
     let is_in = addr.is_in();
 
     // Calculate buffer address in 1024-byte EP_SRAM
-    // EP0 (control): First 64 bytes, then distribute remaining space among configurable EPs
-    let buffer_addr = if ep_num == 0 {
-        0 // EP0 control endpoint starts at beginning
-    } else {
-        // Configurable endpoints: distribute remaining 960 bytes (1024 - 64)
-        (64 + ((ep_num - 1) * (960 / 7))) as u16 // Approximately equal distribution
-    };
+    // Get proper buffer address based on endpoint number and direction
+    let buffer_addr = get_endpoint_buffer_addr(ep_num, is_in);
 
-    // HT32F52352 endpoint type configuration
-    // The eptype field might be a boolean or might not exist in EPnCFGR
-    // For now, we'll assume it's a simple control flag
-    let is_control = ep_type == EndpointType::Control;
+    let ep_type_str = match ep_type {
+        EndpointType::Control => "Control",
+        EndpointType::Isochronous => "Isochronous",
+        EndpointType::Bulk => "Bulk",
+        EndpointType::Interrupt => "Interrupt",
+    };
+    info!("🔧 EP_CONFIG: EP{} {} {} size={} addr={:#x}",
+         ep_num, if is_in { "IN" } else { "OUT" }, ep_type_str, max_packet_size, buffer_addr);
 
     // Configure endpoint based on endpoint number and type
     // Hardware supports: EP1-3 (single-buffered), EP4-7 (double-buffered)
     match ep_num {
         0 => {
-            // EP0 is special - control endpoint, always enabled
+            // EP0 is special - control endpoint, uses SETUP buffer address (0x000)
+            // EP0 SETUP buffer is always at offset 0x000, regardless of direction
+            let ep0_setup_addr = get_ep0_setup_addr();
             usb.ep0cfgr().modify(|_, w| unsafe {
-                w.epbufa().bits(buffer_addr as u16)
+                w.epbufa().bits(ep0_setup_addr)
                  .eplen().bits(max_packet_size.min(64) as u8)
                  // EP0 doesn't have direction or type fields - it's bidirectional control
             });
+
+            // Enable EP0-specific interrupts for setup, in, and out (CRITICAL for enumeration!)
+            // Following ChibiOS pattern: USBEPnIER_SDRXIE|USBEPnIER_IDTXIE|USBEPnIER_ODRXIE
+            usb.ep0ier().modify(|_, w| unsafe {
+                w.sdrxie().set_bit()  // Setup Data Received Interrupt Enable - CRITICAL!
+                 .idtxie().set_bit()  // IN Data Transfer Complete Interrupt Enable
+                 .odrxie().set_bit()  // OUT Data Received Interrupt Enable
+            });
+
+            // Enable global EP0 interrupt
+            usb.ier().modify(|_, w| w.ep0ie().set_bit());
+
+            // DEBUG: Verify EP0 interrupt configuration
+            let ep0_ier = usb.ep0ier().read();
+            info!("🔧 EP0_IER_CFG: SDRXIE={} IDTXIE={} ODRXIE={} EP0IE={}",
+                   ep0_ier.sdrxie().bit_is_set(), ep0_ier.idtxie().bit_is_set(),
+                   ep0_ier.odrxie().bit_is_set(), usb.ier().read().ep0ie().bit_is_set());
         }
         1 => {
             usb.ep1cfgr().modify(|_, w| unsafe {
-                w.epbufa().bits(buffer_addr as u16)
-                 .eplen().bits(max_packet_size.min(64) as u8)
+                // HT32 EPnCFGR register structure according to documentation:
+                // Bits [31] EPEN: Endpoint enable
+                // Bits [29] EPTYPE: Transfer type (0=Control/Bulk/Interrupt, 1=Isochronous)
+                // Bits [28] EPDIR: Direction (0=OUT, 1=IN)
+                // Bits [27:24] EPADR: Endpoint address
+                // Bits [16:10] EPLEN: Buffer length (4-byte aligned)
+                // Bits [9:0] EPBUFA: Buffer offset address
+
+                let aligned_max_packet_size = ((max_packet_size.min(64) + 3) / 4) * 4; // 4-byte aligned
+
+                w.epbufa().bits(buffer_addr)
+                 .eplen().bits((aligned_max_packet_size / 4) as u8) // Store as 4-byte units
                  .epadr().bits(ep_num as u8)
+                 .eptype().bit(matches!(ep_type, EndpointType::Isochronous)) // 1=ISO, 0=CTRL/BULK/INTR
+                 .epdir().bit(is_in)  // Set direction: 1=IN, 0=OUT
                  .epen().set_bit()
             });
+
+            // Enable endpoint interrupt
+            usb.ier().modify(|_, w| w.ep1ie().set_bit());
         }
         2 => {
             usb.ep2cfgr().modify(|_, w| unsafe {
-                w.epbufa().bits(buffer_addr as u16)
-                 .eplen().bits(max_packet_size.min(64) as u8)
+                // Apply proper HT32 EPnCFGR register structure
+                let aligned_max_packet_size = ((max_packet_size.min(64) + 3) / 4) * 4; // 4-byte aligned
+
+                w.epbufa().bits(buffer_addr)
+                 .eplen().bits((aligned_max_packet_size / 4) as u8) // Store as 4-byte units
                  .epadr().bits(ep_num as u8)
+                 .eptype().bit(matches!(ep_type, EndpointType::Isochronous)) // 1=ISO, 0=CTRL/BULK/INTR
+                 .epdir().bit(is_in)  // Set direction: 1=IN, 0=OUT
                  .epen().set_bit()
             });
+
+            // Enable endpoint interrupt
+            usb.ier().modify(|_, w| w.ep2ie().set_bit());
         }
         3 => {
             usb.ep3cfgr().modify(|_, w| unsafe {
-                w.epbufa().bits(buffer_addr as u16)
-                 .eplen().bits(max_packet_size.min(64) as u8)
+                // Apply proper HT32 EPnCFGR register structure
+                let aligned_max_packet_size = ((max_packet_size.min(64) + 3) / 4) * 4; // 4-byte aligned
+
+                w.epbufa().bits(buffer_addr)
+                 .eplen().bits((aligned_max_packet_size / 4) as u8) // Store as 4-byte units
                  .epadr().bits(ep_num as u8)
+                 .eptype().bit(matches!(ep_type, EndpointType::Isochronous)) // 1=ISO, 0=CTRL/BULK/INTR
+                 .epdir().bit(is_in)  // Set direction: 1=IN, 0=OUT
                  .epen().set_bit()
             });
+
+            // Enable endpoint interrupt
+            usb.ier().modify(|_, w| w.ep3ie().set_bit());
         }
         4..=7 => {
-            // For endpoints 4-7, use a generic approach if needed in future
-            // HT32F52352 has registers up to EP7CFGR
+            // For endpoints 4-7, the approach would be similar but using EP4CFGR-EP7CFGR
             // This would need to be implemented when supporting more endpoints
+            warn!("🔧 EP_CONFIG: Endpoint {} not yet implemented", ep_num);
         }
         _ => {
-            // HT32F52352 only supports 8 endpoints (0-7)
+            error!("🔧 EP_CONFIG: Invalid endpoint number {}", ep_num);
         }
     }
 }
@@ -498,17 +731,28 @@ async fn read_endpoint_data(addr: EndpointAddress, buf: &mut [u8]) -> Result<usi
     }
 
     // Read data from USB SRAM buffer
-    let buffer_addr = get_endpoint_buffer_addr(ep_num);
+    let buffer_addr = get_endpoint_buffer_addr(ep_num, false); // false = OUT direction
     let bytes_to_read = buf.len().min(MAX_PACKET_SIZE);
 
-    // In a real implementation, we would:
-    // 1. Access the USB SRAM at buffer_addr
-    // 2. Copy bytes_to_read from SRAM to buf
-    // 3. Clear the data ready flag by setting NAKRX
+    // Get the actual data length from EPnTCR (Transfer Count Register)
+    // EP0 has separate TXCNT/RXCNT fields, EP1-3 have combined TCNT field
+    let data_len = match ep_num {
+        0 => usb.ep0tcr().read().rxcnt().bits() as usize, // EP0 OUT for setup/data
+        1 => usb.ep1tcr().read().tcnt().bits() as usize,
+        2 => usb.ep2tcr().read().tcnt().bits() as usize,
+        3 => usb.ep3tcr().read().tcnt().bits() as usize,
+        _ => 0,
+    };
 
-    // For now, simulate reading data
-    for i in 0..bytes_to_read {
-        buf[i] = 0x00; // Placeholder data
+    let actual_len = bytes_to_read.min(data_len);
+
+    // Copy data from USB SRAM to the user buffer using proper hardware access
+    let src_start = buffer_addr as usize;
+
+    if src_start + actual_len <= EP_SRAM_SIZE {
+        read_usb_sram_bytes(src_start, &mut buf[..actual_len]);
+    } else {
+        return Err(EndpointError::BufferOverflow);
     }
 
     // Set NAKRX to indicate data has been read
@@ -520,17 +764,43 @@ async fn read_endpoint_data(addr: EndpointAddress, buf: &mut [u8]) -> Result<usi
         _ => {}
     }
 
-    Ok(bytes_to_read)
+    Ok(actual_len)
 }
 
 /// Get endpoint buffer address in USB SRAM
-fn get_endpoint_buffer_addr(ep_num: usize) -> u16 {
+/// EP0 buffer layout according to HT32F52352 USB requirements
+/// - SETUP buffer: 8 bytes at offset 0x000
+/// - TX buffer: 64 bytes at offset 0x008
+/// - RX buffer: 64 bytes at offset 0x048
+/// - Total EP0 allocation: 136 bytes (0x000-0x087)
+const EP0_SETUP_OFFSET: u16 = 0x000;
+const EP0_TX_OFFSET: u16 = 0x008;
+const EP0_RX_OFFSET: u16 = 0x048;
+const EP0_TOTAL_SIZE: u16 = 136; // 8 + 64 + 64
+
+/// Get endpoint buffer address based on EP number and direction
+/// For EP0, returns appropriate SETUP/TX/RX offset based on direction
+/// For EP1-7, returns allocated buffer from remaining 960 bytes
+fn get_endpoint_buffer_addr(ep_num: usize, is_in: bool) -> u16 {
     if ep_num == 0 {
-        0 // EP0 starts at beginning of EP_SRAM
+        // EP0 has separate SETUP, TX, and RX buffers
+        if is_in {
+            EP0_TX_OFFSET // IN direction uses TX buffer
+        } else {
+            EP0_RX_OFFSET // OUT direction uses RX buffer
+        }
     } else {
-        // Distribute remaining 960 bytes among configurable endpoints
-        (64 + ((ep_num - 1) * (960 / 7))) as u16
+        // EP1-7 use remaining 960 bytes (1024 - 136 for EP0)
+        // Start after EP0 allocation, distribute evenly
+        let available_for_others = 960;
+        let bytes_per_ep = available_for_others / 7; // ~137 bytes per endpoint
+        EP0_TOTAL_SIZE + ((ep_num - 1) * bytes_per_ep) as u16
     }
+}
+
+/// Get EP0 SETUP buffer address for control transfers
+fn get_ep0_setup_addr() -> u16 {
+    EP0_SETUP_OFFSET
 }
 
 async fn write_endpoint_data(addr: EndpointAddress, buf: &[u8]) -> Result<(), EndpointError> {
@@ -542,12 +812,17 @@ async fn write_endpoint_data(addr: EndpointAddress, buf: &[u8]) -> Result<(), En
     }
 
     // Copy data to USB SRAM buffer
-    let buffer_addr = get_endpoint_buffer_addr(ep_num);
+    let buffer_addr = get_endpoint_buffer_addr(ep_num, true); // true = IN direction
 
-    // In a real implementation, we would:
-    // 1. Copy buf data to USB SRAM at buffer_addr
-    // 2. Set endpoint data length in EPnCFGR
-    // 3. Clear NAKTX flag to start transmission via EPnCSR
+    // Copy data from user buffer to USB SRAM using proper hardware access
+    let dst_start = buffer_addr as usize;
+    let dst_end = dst_start + buf.len();
+
+    if dst_end <= EP_SRAM_SIZE {
+        write_usb_sram_bytes(dst_start, buf);
+    } else {
+        return Err(EndpointError::BufferOverflow);
+    }
 
     // Update endpoint configuration with data length
     match ep_num {
@@ -593,19 +868,47 @@ async fn write_endpoint_data(addr: EndpointAddress, buf: &[u8]) -> Result<(), En
 async fn read_setup_packet() -> [u8; 8] {
     let usb = unsafe { &*pac::Usb::ptr() };
 
-    // Wait for setup packet interrupt or check EP0 status
+    debug!("📋 SETUP_WAIT: Waiting for setup packet");
+
+    // Wait for setup packet interrupt with timeout to prevent hanging when no host is connected
     // For HT32F52352, setup packets are handled via interrupt and EP0 buffer
-    while !usb.isr().read().ep0if().bit_is_set() {
-        wait_for_usb_event().await;
+    let mut timeout = 5000; // 5 second timeout for setup packet (reasonable for test environment)
+    while !usb.isr().read().ep0if().bit_is_set() && timeout > 0 {
+        // Brief delay to prevent busy-waiting
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(1)).await;
+        timeout -= 1;
     }
 
-    // Read setup packet from EP0 buffer
-    // In a real implementation, we would read from the EP0 buffer in USB SRAM
+    // If timeout occurred, return empty setup packet (no host connected)
+    if timeout == 0 {
+        debug!("📋 SETUP_TIMEOUT: No setup packet received within timeout - no host connected");
+        return [0u8; 8];
+    }
+
+    // Read setup packet from EP0 SETUP buffer at offset 0x000 in USB SRAM
     let mut packet = [0u8; 8];
 
-    // For now, return a placeholder setup packet
-    // This should be implemented to read the actual setup packet from EP0 buffer
-    packet = [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x40, 0x00]; // GET_DESCRIPTOR DEVICE
+    // Setup packets are always 8 bytes and start at EP0 SETUP buffer (address 0x000)
+    let setup_addr = get_ep0_setup_addr() as usize;
+    read_usb_sram_bytes(setup_addr, &mut packet);
+
+    // Only log if we got a non-zero setup packet (host is actually communicating)
+    if packet != [0u8; 8] {
+        info!("📋 SETUP_PACKET: Setup packet received: [{:02X}, {:02X}, {:02X}, {:02X}, {:02X}, {:02X}, {:02X}, {:02X}]",
+              packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[6], packet[7]);
+
+        // Decode setup packet for debugging
+        let bm_request_type = packet[0];
+        let b_request = packet[1];
+        let w_value = u16::from_le_bytes([packet[2], packet[3]]);
+        let w_index = u16::from_le_bytes([packet[4], packet[5]]);
+        let w_length = u16::from_le_bytes([packet[6], packet[7]]);
+
+        info!("📋 SETUP_DECODE: type={:#02X} request={:#02X} value={:#04X} index={:#04X} length={}",
+             bm_request_type, b_request, w_value, w_index, w_length);
+    } else {
+        debug!("📋 SETUP_PACKET: No setup packet data available");
+    }
 
     // Clear EP0 interrupt flag
     usb.isr().modify(|_, w| w.ep0if().set_bit());
@@ -625,34 +928,108 @@ fn set_device_address(addr: u8) {
     // For now, just setting the address should be sufficient
 }
 
-async fn poll_usb_events() -> Event {
+async fn poll_usb_events(bus: &mut Bus<'_>) -> Event {
+    // Wait for USB interrupt signal before checking events
+    // This is CRITICAL - embassy-usb expects poll() to block until an event occurs
+    USB_EVENT_SIGNAL.wait().await;
+    debug!("🚀 POLL_USB_EVENTS: Interrupt signal received, checking events");
+
     let usb = unsafe { &*pac::Usb::ptr() };
     let isr = usb.isr().read();
 
-    // Check for USB reset
-    if isr.urstif().bit_is_set() {
-        usb.isr().modify(|_, w| w.urstif().set_bit()); // Clear flag
-        return Event::Reset;
+    // Always log ISR when we get an interrupt signal
+    info!("🔍 POLL_USB_EVENTS: ISR = {:#010x}, processing interrupt", isr.bits());
+
+    // Track if reset has been handled to prevent infinite loops
+    static mut RESET_HANDLED: bool = false;
+
+    // Debug: Check individual flags to understand the ISR value
+    let urstif_set = isr.urstif().bit_is_set();
+    let rsmif_set = isr.rsmif().bit_is_set();
+    let suspif_set = isr.suspif().bit_is_set();
+    let soif_set = isr.sofif().bit_is_set();
+
+    info!("🔍 ISR_FLAGS: URSTIF={} RSMIF={} SUSPIF={} SOFIF={}",
+           urstif_set, rsmif_set, suspif_set, soif_set);
+
+    // Check for resume (RSMIF - Resume Interrupt Flag) FIRST
+    // This is bit 2 (0x00000004) and seems to be the sticky flag we're seeing
+    if rsmif_set {
+        info!("▶️  POLL_USB_EVENTS: USB resume detected (RSMIF)");
+        // Clear the resume interrupt flag - write 1 to clear
+        usb.isr().modify(|_, w| w.rsmif().set_bit());
+
+        // Also clear any pending reset state that might be causing issues
+        if urstif_set {
+            debug!("🔧 ISR_FLAGS: Also clearing URSTIF during resume");
+            usb.isr().modify(|_, w| w.urstif().set_bit());
+        }
+
+        return Event::Resume;
+    }
+
+    // Check for USB reset (URSTIF - bit 1, 0x00000002)
+    if urstif_set {
+        info!("🔄 POLL_USB_EVENTS: USB reset detected (URSTIF)");
+
+        // Clear the interrupt flag - try multiple approaches to ensure it's cleared
+        usb.isr().modify(|_, w| w.urstif().set_bit());
+
+        // Force reset and clear reset condition to properly handle the reset state
+        usb.csr().modify(|_, w| w.fres().set_bit());
+        usb.csr().modify(|_, w| w.fres().clear_bit());
+
+        // Force clear ALL interrupt flags to prevent sticky flag issues
+        unsafe {
+            usb.isr().write(|w| w.bits(0xFFFFFFFF));
+        }
+
+        unsafe {
+            if !RESET_HANDLED {
+                info!("🔄 POLL_USB_EVENTS: Handling USB reset, returning PowerDetected");
+                RESET_HANDLED = true;
+                return Event::PowerDetected;
+            } else {
+                // Reset already handled, ignore further reset interrupts
+                debug!("🔄 POLL_USB_EVENTS: Reset already handled, ignoring");
+                return Event::Suspend;
+            }
+        }
+    }
+
+    // Check for SOF (Start of Frame) - this happens continuously during enumeration
+    if isr.sofif().bit_is_set() {
+        debug!("⏱️  POLL_USB_EVENTS: USB SOF detected");
+        usb.isr().modify(|_, w| w.sofif().set_bit()); // Clear flag
+        // SOF events are normal and shouldn't return events that stop polling
+        // Just clear the flag and continue
     }
 
     // Check for suspend
     if isr.suspif().bit_is_set() {
+        info!("⏸️  POLL_USB_EVENTS: USB suspend detected");
         usb.isr().modify(|_, w| w.suspif().set_bit()); // Clear flag
         return Event::Suspend;
     }
 
-    // Check for resume (RSMIF - Resume Interrupt Flag)
-    if isr.rsmif().bit_is_set() {
-        usb.isr().modify(|_, w| w.rsmif().set_bit()); // Clear flag
-        return Event::Resume;
+    // For HT32F52352, we need to trigger PowerDetected once to enable the device
+    // Check if we've already sent PowerDetected
+    if !bus.power_detected_sent.load(Ordering::Relaxed) {
+        info!("⚡ POLL_USB_EVENTS: Returning PowerDetected to trigger device enable");
+        bus.power_detected_sent.store(true, Ordering::Relaxed);
+        return Event::PowerDetected;
     }
 
-    // For VBUS detection, this might be handled differently in HT32F52352
-    // For now, assume power is detected when USB is enabled
-
-    // No specific event, wait for next interrupt
-    USB_EVENT_SIGNAL.wait().await;
-    Event::PowerDetected // Default event
+    // No events detected - return suspend to indicate no activity
+    // Reduce logging frequency to avoid spam
+    static mut SUSPEND_COUNT: u32 = 0;
+    unsafe {
+        SUSPEND_COUNT += 1;
+        if SUSPEND_COUNT % 100 == 1 {
+            debug!("⏸️  POLL_USB_EVENTS: No events detected, returning suspend ({})", SUSPEND_COUNT);
+        }
+    }
+    Event::Suspend
 }
 
 fn set_endpoint_stall(addr: EndpointAddress, stalled: bool) {
@@ -774,20 +1151,11 @@ fn set_endpoint_enabled(addr: EndpointAddress, enabled: bool) {
 fn enable_usb_device() {
     let usb = unsafe { &*pac::Usb::ptr() };
 
-    // Enable USB pull-up resistor on D+ line to signal presence to host
-    usb.csr().modify(|_, w| w.dppuen().set_bit());
+    // Note: DPPUEN (DP pull-up) and interrupts are already enabled during initialization
+    // This function can be used for any additional runtime enable operations if needed
+    // Currently, all critical USB operations are handled in initialize_usb_hardware()
 
-    // Enable global USB interrupt
-    usb.ier().modify(|_, w| {
-        w.ugie().set_bit()   // Global interrupt enable
-         .urstie().set_bit() // USB reset interrupt enable
-         .suspie().set_bit() // Suspend interrupt enable
-         .rsmie().set_bit()  // Resume interrupt enable
-         .sofie().set_bit()  // Start of Frame interrupt enable
-         .ep0ie().set_bit()  // Endpoint 0 interrupt enable
-    });
-
-    // Clear any pending interrupts
+    // Clear any pending interrupts that might have occurred since initialization
     unsafe {
         usb.isr().write(|w| w.bits(0xFFFFFFFF));
     }
@@ -805,8 +1173,47 @@ fn disable_usb_device() {
     }
 }
 
-/// USB endpoint memory buffer - matches HT32F52352 hardware: 1024-byte EP_SRAM
-static mut EP_MEMORY: [u8; EP_SRAM_SIZE] = [0; EP_SRAM_SIZE];
+/// USB SRAM base address - hardware endpoint buffer memory at 0x400AA000
+/// This provides direct access to HT32 USB controller's 1024-byte endpoint SRAM
+const USB_SRAM_BASE: *mut u32 = 0x400AA000 as *mut u32;
+
+/// USB endpoint memory access functions - 32-bit word access with proper byte ordering
+/// HT32 USB SRAM requires 32-bit word access for proper operation
+fn read_usb_sram_word(offset: usize) -> u32 {
+    unsafe {
+        USB_SRAM_BASE.add(offset / 4).read_volatile()
+    }
+}
+
+fn write_usb_sram_word(offset: usize, value: u32) {
+    unsafe {
+        USB_SRAM_BASE.add(offset / 4).write_volatile(value)
+    }
+}
+
+/// Read bytes from USB SRAM with proper 8-bit access
+fn read_usb_sram_bytes(offset: usize, buf: &mut [u8]) {
+    for (i, byte) in buf.iter_mut().enumerate() {
+        let word_offset = offset + i;
+        let word_pos = word_offset % 4;
+        let word = read_usb_sram_word(word_offset - word_pos);
+        *byte = ((word >> (word_pos * 8)) & 0xFF) as u8;
+    }
+}
+
+/// Write bytes to USB SRAM with proper 8-bit access
+fn write_usb_sram_bytes(offset: usize, buf: &[u8]) {
+    for (i, &byte) in buf.iter().enumerate() {
+        let word_offset = offset + i;
+        let word_pos = word_offset % 4;
+        let word_addr = word_offset - word_pos;
+
+        // Read current word, modify byte, write back
+        let mut word = read_usb_sram_word(word_addr);
+        word = (word & !(0xFF << (word_pos * 8))) | ((byte as u32) << (word_pos * 8));
+        write_usb_sram_word(word_addr, word);
+    }
+}
 
 /// USB event signal for ISR to Task communication - avoids critical section deadlock
 static USB_EVENT_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -832,14 +1239,43 @@ pub unsafe fn on_usb_interrupt() {
     let isr = usb.isr().read();
     let mut event_signaled = false;
 
-    // Handle reset interrupt
+    // Always log USB interrupts for debugging enumeration
+    info!("🔌 USB_IRQ: ISR = {:#010x}", isr.bits());
+
+    // Handle reset interrupt - CRITICAL for enumeration
     if isr.urstif().bit_is_set() {
+        info!("🔄 USB_IRQ_RESET: USB reset detected - ENUMERATION STARTING!");
+
         // Clear reset interrupt flag
         usb.isr().modify(|_, w| w.urstif().set_bit());
+
+        // Reset USB peripheral state properly
+        usb.csr().modify(|_, w| w.fres().set_bit());
+        usb.csr().modify(|_, w| w.fres().clear_bit());
+
+        // Re-enable pull-up after reset
+        usb.csr().modify(|_, w| w.dppuen().set_bit());
+
+        event_signaled = true;
+        info!("✅ USB_IRQ_RESET: Reset handled, device ready for enumeration");
+    }
+
+    // Handle suspend interrupt
+    if isr.suspif().bit_is_set() {
+        info!("⏸️  USB_IRQ_SUSPEND: USB suspend detected");
+        usb.isr().modify(|_, w| w.suspif().set_bit());
         event_signaled = true;
     }
 
-    // Handle endpoint interrupts
+    // Handle resume interrupt
+    if isr.rsmif().bit_is_set() {
+        info!("▶️  USB_IRQ_RESUME: USB resume detected");
+        usb.isr().modify(|_, w| w.rsmif().set_bit());
+        event_signaled = true;
+    }
+
+    // Handle endpoint interrupts - CRITICAL for control transfers
+    // Process endpoint-specific interrupt flags based on HT32 documentation
     for ep in 0..8 {
         let ep_flag = match ep {
             0 => isr.ep0if().bit_is_set(),
@@ -854,7 +1290,92 @@ pub unsafe fn on_usb_interrupt() {
         };
 
         if ep_flag {
-            // Clear endpoint interrupt flag
+            info!("📨 USB_IRQ_EP{}: Endpoint {} interrupt detected", ep, ep);
+
+            // Handle endpoint-specific interrupt flags
+            match ep {
+                0 => {
+                    // EP0: Check specific interrupt types (SETUP, OUT, IN)
+                    let ep0_isr = usb.ep0isr().read();
+
+                    if ep0_isr.sdrxif().bit_is_set() {
+                        info!("📋 USB_IRQ_EP0_SETUP: SETUP packet received - ENUMERATION REQUEST!");
+                        // SETUP packet handling - critical for enumeration
+                        usb.ep0isr().modify(|_, w| w.sdrxif().set_bit());
+                        event_signaled = true;
+                    }
+
+                    if ep0_isr.odrxif().bit_is_set() {
+                        info!("📥 USB_IRQ_EP0_OUT: OUT data received on EP0");
+                        // OUT data received on EP0
+                        usb.ep0isr().modify(|_, w| w.odrxif().set_bit());
+                        event_signaled = true;
+                    }
+
+                    if ep0_isr.idtxif().bit_is_set() {
+                        info!("📤 USB_IRQ_EP0_IN: IN data transmitted on EP0");
+                        // IN data transmitted on EP0
+                        usb.ep0isr().modify(|_, w| w.idtxif().set_bit());
+                        event_signaled = true;
+                    }
+                }
+                1 => {
+                    // EP1: Check OUT/IN interrupts
+                    let ep1_isr = usb.ep1isr().read();
+
+                    if ep1_isr.odrxif().bit_is_set() {
+                        info!("📥 USB_IRQ_EP1_OUT: OUT data received on EP1");
+                        usb.ep1isr().modify(|_, w| w.odrxif().set_bit());
+                        event_signaled = true;
+                    }
+
+                    if ep1_isr.idtxif().bit_is_set() {
+                        info!("📤 USB_IRQ_EP1_IN: IN data transmitted on EP1");
+                        usb.ep1isr().modify(|_, w| w.idtxif().set_bit());
+                        event_signaled = true;
+                    }
+                }
+                2 => {
+                    // EP2: Check OUT/IN interrupts
+                    let ep2_isr = usb.ep2isr().read();
+
+                    if ep2_isr.odrxif().bit_is_set() {
+                        info!("📥 USB_IRQ_EP2_OUT: OUT data received on EP2");
+                        usb.ep2isr().modify(|_, w| w.odrxif().set_bit());
+                        event_signaled = true;
+                    }
+
+                    if ep2_isr.idtxif().bit_is_set() {
+                        info!("📤 USB_IRQ_EP2_IN: IN data transmitted on EP2");
+                        usb.ep2isr().modify(|_, w| w.idtxif().set_bit());
+                        event_signaled = true;
+                    }
+                }
+                3 => {
+                    // EP3: Check OUT/IN interrupts
+                    let ep3_isr = usb.ep3isr().read();
+
+                    if ep3_isr.odrxif().bit_is_set() {
+                        info!("📥 USB_IRQ_EP3_OUT: OUT data received on EP3");
+                        usb.ep3isr().modify(|_, w| w.odrxif().set_bit());
+                        event_signaled = true;
+                    }
+
+                    if ep3_isr.idtxif().bit_is_set() {
+                        info!("📤 USB_IRQ_EP3_IN: IN data transmitted on EP3");
+                        usb.ep3isr().modify(|_, w| w.idtxif().set_bit());
+                        event_signaled = true;
+                    }
+                }
+                4..=7 => {
+                    // EP4-7: Similar OUT/IN interrupt handling (can be expanded as needed)
+                    info!("📨 USB_IRQ_EP{}: Endpoint {} interrupt - data transfer", ep, ep);
+                    event_signaled = true;
+                }
+                _ => {}
+            }
+
+            // Clear the global endpoint interrupt flag
             match ep {
                 0 => usb.isr().modify(|_, w| w.ep0if().set_bit()),
                 1 => usb.isr().modify(|_, w| w.ep1if().set_bit()),
@@ -866,19 +1387,21 @@ pub unsafe fn on_usb_interrupt() {
                 7 => usb.isr().modify(|_, w| w.ep7if().set_bit()),
                 _ => {}
             }
-            event_signaled = true;
         }
     }
 
-    // Handle other USB interrupts as needed
+    // Handle SOF (Start of Frame) interrupts - indicates successful enumeration
     if isr.sofif().bit_is_set() {
+        info!("⏰ USB_IRQ_SOF: Start of Frame - ENUMERATION SUCCESSFUL!");
         usb.isr().modify(|_, w| w.sofif().set_bit());
-        // SOF interrupts are frequent, don't signal for them unless needed
+        // SOF indicates host is communicating successfully
+        event_signaled = true;
     }
 
     // Signal the USB event outside of critical section context
     // This avoids deadlock when timer interrupts try to wake tasks
     if event_signaled {
         USB_EVENT_SIGNAL.signal(());
+        info!("🚀 USB_IRQ_SIGNAL: USB event signaled to embassy-usb stack");
     }
 }

@@ -1,6 +1,23 @@
 //! GPIO (General Purpose Input/Output) driver
 //!
 //! This module provides GPIO functionality similar to embassy-stm32, adapted for HT32 architecture.
+//!
+//! ## Important Pin Mappings (HT32F52352)
+//!
+//! ### USB Pins (Confirmed from Hardware Documentation)
+//! **PC6 (Pin 15/11/7)** - USB DM (USB D- / Differential data minus)
+//! **PC7 (Pin 16/12/8)** - USB DP (USB D+ / Differential data plus)
+//!
+//! USB pins use **Alternate Function 10 (AF10)** when configured as USB functionality.
+//!
+//! ### Bootloader Pins
+//! **PA4** - USART_TX function in Boot loader mode
+//! **PA5** - USART_RX function in Boot loader mode
+//!
+//! ### Alternate Function (AF) Numbers
+//! - AF0: Default GPIO function
+//! - AF1-AF9: Various peripherals (Timers, SPI, I2C, UART)
+//! - **AF10: USB, specific peripherals** (including PC6/PC7 for USB)
 
 use core::marker::PhantomData;
 

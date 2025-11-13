@@ -7,7 +7,11 @@ use core::marker::PhantomData;
 use embassy_sync::waitqueue::AtomicWaker;
 use core::task::Poll;
 
-pub use crate::pac::{Interrupt, interrupt};
+pub use crate::pac::Interrupt;
+
+// Re-export interrupt macro if available
+#[cfg(feature = "rt")]
+pub use crate::pac::interrupt;
 
 
 /// Critical section implementation for Embassy and defmt
