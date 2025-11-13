@@ -4,3 +4,6 @@
 [submodule "deps/ht32f523x2"]
 	path = deps/ht32f523x2
 	url = https://github.com/hitsmaxft/ht32f523x2.git
+[submodule "deps/ChibiOS-Contrib"]
+	path = deps/ChibiOS-Contrib
+	url = https://github.com/ChibiOS/ChibiOS-Contrib.git
