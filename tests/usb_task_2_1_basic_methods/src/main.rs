@@ -92,6 +92,7 @@ async fn usb_basic_methods_test(mut p: embassy_ht32f523xx::Peripherals) {
     match select(usb_fut, timer_fut).await {
         Either::First(_) => {
             info!("❌ TEST FAILED: usb.run() unexpectedly exited.");
+            cortex_m::asm::bkpt();
         }
         Either::Second(_) => {
             info!("✅ This confirms driver.enable() worked and usb.run() can idle.");
@@ -102,7 +103,6 @@ async fn usb_basic_methods_test(mut p: embassy_ht32f523xx::Peripherals) {
             info!("🔍 USB ENUMERATION: Device should now be visible to host - check cyme -l for 'EBUSB_210'");
         }
     }
-
 
     info!("🏁 ALL_USB_BASIC_METHODS_TESTS_PASSED - Task 2.1 verification complete");
     info!("🔍 HOST VERIFY: Run 'cyme --list' to confirm 'EBUSB_210' device appears");

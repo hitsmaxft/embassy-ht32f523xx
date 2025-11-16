@@ -213,3 +213,10 @@ pub unsafe extern "C" fn EXTI4_15() {
     // Wake tasks waiting on EXTI4_15
     EXTI4_15_WAKER.wake();
 }
+
+#[cfg(feature = "rt")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn USB() {
+    // 🚨 安全地调用 USB 驱动的事件处理器
+    unsafe { crate::usb::on_usb_interrupt() };
+}

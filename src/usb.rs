@@ -56,10 +56,10 @@ const SINGLE_BUFFERED_EPS: usize = 3;   // Single-buffered endpoints (bulk/inter
 const DOUBLE_BUFFERED_EPS: usize = 4;   // Double-buffered endpoints (bulk/interrupt/iso)
 
 /// USB DM (Data Minus) pin type
-pub type UsbDm<const PORT: char, const PIN: u8> = Pin<PORT, PIN, mode::AlternateFunction<10>>;
+pub type UsbDm<const PORT: char, const PIN: u8> = Pin<PORT, PIN, mode::AlternateFunction<0>>;
 
 /// USB DP (Data Plus) pin type
-pub type UsbDp<const PORT: char, const PIN: u8> = Pin<PORT, PIN, mode::AlternateFunction<10>>;
+pub type UsbDp<const PORT: char, const PIN: u8> = Pin<PORT, PIN, mode::AlternateFunction<0>>;
 
 /// USB pin pair for DM/DP configuration
 pub struct UsbPins<const DM_PORT: char, const DM_PIN: u8, const DP_PORT: char, const DP_PIN: u8> {
@@ -127,6 +127,7 @@ pub struct Bus<'d> {
     ep_out_wakers: [AtomicWaker; MAX_EP_COUNT], // OUT endpoint wakers
     bus_waker: AtomicWaker,
     power_detected_sent: AtomicBool, // Track if PowerDetected event has been sent
+    device_configured: Signal<CriticalSectionRawMutex, ()>, // Signal when device is configured
 }
 
 impl<'d> Bus<'d> {
@@ -139,6 +140,7 @@ impl<'d> Bus<'d> {
             ep_out_wakers: [NEW_AW; MAX_EP_COUNT], // Full waker arrays
             bus_waker: AtomicWaker::new(),
             power_detected_sent: AtomicBool::new(false),
+            device_configured: Signal::new(),
         }
     }
 }
@@ -273,8 +275,21 @@ impl<'d> embassy_usb_driver::Endpoint for Endpoint<'d, In> {
     }
 
     async fn wait_enabled(&mut self) {
-        // Wait for endpoint to be enabled by host
-        // This is a simplified implementation
+        // Wait for device to be configured by host before endpoint is usable
+        // This prevents race condition where write_packet is called before
+        // SET_CONFIGURATION has been processed by the USB driver
+        debug!("⏳ EP_WAIT_ENABLED: EP{} IN waiting for device configuration", self.info.addr.index());
+
+        // Check if device is already configured
+        if DEVICE_CONFIGURED.load(Ordering::Acquire) {
+            debug!("⚡ EP_WAIT_ENABLED: EP{} IN device already configured", self.info.addr.index());
+            return;
+        }
+
+        // Wait for configuration using the signal
+        DEVICE_CONFIG_SIGNAL.wait().await;
+
+        debug!("✅ EP_WAIT_ENABLED: EP{} IN device configured, endpoint ready", self.info.addr.index());
     }
 }
 
@@ -284,7 +299,21 @@ impl<'d> embassy_usb_driver::Endpoint for Endpoint<'d, Out> {
     }
 
     async fn wait_enabled(&mut self) {
-        // Wait for endpoint to be enabled by host
+        // Wait for device to be configured by host before endpoint is usable
+        // This prevents race condition where read_packet is called before
+        // SET_CONFIGURATION has been processed by the USB driver
+        debug!("⏳ EP_WAIT_ENABLED: EP{} OUT waiting for device configuration", self.info.addr.index());
+
+        // Check if device is already configured
+        if DEVICE_CONFIGURED.load(Ordering::Acquire) {
+            debug!("⚡ EP_WAIT_ENABLED: EP{} OUT device already configured", self.info.addr.index());
+            return;
+        }
+
+        // Wait for configuration using the signal
+        DEVICE_CONFIG_SIGNAL.wait().await;
+
+        debug!("✅ EP_WAIT_ENABLED: EP{} OUT device configured, endpoint ready", self.info.addr.index());
     }
 }
 
@@ -503,9 +532,12 @@ fn initialize_usb_hardware(usb: &crate::pac::usb::RegisterBlock, config: &Config
 
     // Step 3: Disable DP wake (normal operation)
     // This transitions USB from powered-up to active state
-    usb.csr().modify(|_, w| unsafe {
-        w.dpwken().clear_bit()  // Disable DP wake - USB now in active operation mode
+    // 修正后的 Step 3：禁用 DP 唤醒
+    usb.csr().modify(|_, w| {
+        // 确保清除 DPWKEN
+        w.dpwken().clear_bit()
     });
+    
 
     // Step 4: Enable USB interrupts at peripheral level
     // Following ChibiOS: USBIER_UGIE | USBIER_SOFIE | USBIER_URSTIE | USBIER_RSMIE | USBIER_SUSPIE | USBIER_EP0IE
@@ -519,34 +551,8 @@ fn initialize_usb_hardware(usb: &crate::pac::usb::RegisterBlock, config: &Config
     });
 
     // Note: DPPUEN (DP pull-up) is enabled in Step 1 and maintained in Step 3
-    // The pull-up resistor signals to the host that a USB device is connected and ready for enumeration
 
-    // Enable USB interrupt in NVIC with appropriate priority
-    // This is the CRITICAL missing piece - USB interrupts were never enabled in NVIC!
-    unsafe {
-        // Raw NVIC register access - interrupt 29 is USB
-        let nvic = 0xE000E100 as *mut u32;
-
-        // Enable USB interrupt in ISER (Interrupt Set-Enable Register)
-        // USB is interrupt 29, so bit 29 in ISER[0]
-        let iser0 = nvic.add(0x100); // ISER[0] offset
-        iser0.write_volatile(iser0.read_volatile() | (1 << 29));
-
-        // Set USB interrupt priority in IPR (Interrupt Priority Register)
-        // USB (29) is in IPR[7] (29/4 = 7, remainder 1)
-        let ipr7 = nvic.add(0x400 + 7 * 4); // IPR base offset + register * 4
-        let current = ipr7.read_volatile();
-        // USB uses bits 8-15 of IPR[7] (since 29 % 4 = 1, so 1*8 = 8)
-        let priority_mask = !(0xFF << 8);
-        let priority_value = 64 << 8; // Priority 64
-        ipr7.write_volatile((current & priority_mask) | priority_value);
-
-        // Clear any pending USB interrupt in ICPR (Interrupt Clear-Pending Register)
-        let icpr0 = nvic.add(0x180); // ICPR[0] offset
-        icpr0.write_volatile(1 << 29);
-    };
-
-    info!("🔌 USB_HW_INIT: USB hardware and NVIC interrupts initialized successfully");
+    info!("🔌 USB_HW_INIT: USB hardware and interrupts initialized successfully");
 }
 
 /// Initialize USB with pins
@@ -557,10 +563,7 @@ pub fn init_usb_with_pins<const DM_PORT: char, const DM_PIN: u8, const DP_PORT: 
 ) -> Driver<'static> {
     let usb = unsafe { &*pac::Usb::ptr() };
 
-    // Initialize USB hardware
-    initialize_usb_hardware(usb, &config);
-
-    // Pins are already configured as alternate function AF10 for USB
+    // Pins are already configured as alternate function AF0 for USB
     // The UsbPins constructor ensures pins are in the correct mode
     let _pins = pins; // Use pins to avoid unused variable warning
 
@@ -906,6 +909,15 @@ async fn read_setup_packet() -> [u8; 8] {
 
         info!("📋 SETUP_DECODE: type={:#02X} request={:#02X} value={:#04X} index={:#04X} length={}",
              bm_request_type, b_request, w_value, w_index, w_length);
+
+        // Check for SET_CONFIGURATION request
+        if bm_request_type == 0x00 && b_request == 0x09 { // Standard device request, SET_CONFIGURATION
+            if !DEVICE_CONFIGURED.load(Ordering::Acquire) {
+                DEVICE_CONFIGURED.store(true, Ordering::Release);
+                DEVICE_CONFIG_SIGNAL.signal(());
+                info!("🎯 SETUP_DECODE: SET_CONFIGURATION received, device configured, signaling endpoint waiters");
+            }
+        }
     } else {
         debug!("📋 SETUP_PACKET: No setup packet data available");
     }
@@ -928,87 +940,129 @@ fn set_device_address(addr: u8) {
     // For now, just setting the address should be sufficient
 }
 
+
+async fn usb_reset() {
+    let usb = unsafe { &*pac::Usb::ptr() };
+
+    info!("🔄 USB_RESET: Starting USB reset slow path (DTRST already done in ISR)");
+
+    // USB Reset - Clear CSR, except for DP pull up (DPPUEN)
+    // This matches the ChibiOS implementation: USB->CSR &= USBCSR_DPPUEN;
+    // Note: SRAMRSTC (DATA PID reset) already executed in ISR for optimal timing
+    usb.csr().modify(|r, w| unsafe {
+        // Preserve only DPPUEN bit, clear all other bits
+        let dppuen_value = r.dppuen().bit();
+        w.bits(0); // Clear all bits first
+        w.dppuen().bit(dppuen_value) // Restore DPPUEN only
+    });
+
+    info!("🔄 USB_RESET: CSR cleared except DPPUEN");
+
+    // Post reset initialization - reset endpoint memory allocation
+    // In ChibiOS this sets usbp->epmem_next = 8;
+    // For our implementation, this is handled by the endpoint buffer allocation system
+
+    // 🔄 关键修正：EP0重新配置移除 - 避免与ISR中的DTRST操作冲突
+    // configure_control_endpoint() 会在Driver::start()时调用，这里不需要重复
+    // 这确保了DTRST操作只在ISR中发生一次
+    info!("🔄 USB_RESET: EP0 configuration skipped - will be handled by Driver::start()");
+
+    // Re-enable USB interrupts after reset
+    // Matching ChibiOS: USBIER_UGIE | USBIER_SOFIE | USBIER_URSTIE | USBIER_RSMIE | USBIER_SUSPIE | USBIER_EP0IE
+    usb.ier().modify(|_, w| {
+        w.ugie().set_bit()     // USB global interrupt enable
+         .sofie().set_bit()    // Start of Frame interrupt
+         .urstie().set_bit()   // USB reset interrupt
+         .rsmie().set_bit()    // Resume interrupt
+         .suspie().set_bit()   // Suspend interrupt
+         .ep0ie().set_bit()    // Endpoint 0 interrupt
+    });
+
+    info!("✅ USB_RESET: USB reset slow path completed (DTRST done only in ISR)");
+}
+// MAIN LOOP of async task 
 async fn poll_usb_events(bus: &mut Bus<'_>) -> Event {
     // Wait for USB interrupt signal before checking events
     // This is CRITICAL - embassy-usb expects poll() to block until an event occurs
     USB_EVENT_SIGNAL.wait().await;
-    debug!("🚀 POLL_USB_EVENTS: Interrupt signal received, checking events");
+    debug!("🚀 POLL_USB_EVENTS: Interrupt signal received, checking atomic flags");
 
-    let usb = unsafe { &*pac::Usb::ptr() };
-    let isr = usb.isr().read();
+    // 🔴 关键：原子交换，读取旧值并清除标志 - 无锁操作
+    // 这避免了在异步任务中直接访问硬件寄存器，防止竞争条件
 
-    // Always log ISR when we get an interrupt signal
-    info!("🔍 POLL_USB_EVENTS: ISR = {:#010x}, processing interrupt", isr.bits());
+    // 1. 优先检查Reset事件 - 最重要的枚举事件
+    // 🔴 关键：慢速路径 - DTRST已在ISR中完成，这里只做协议栈状态管理
+    if IRQ_RESET.load(Ordering::Acquire) {
+        IRQ_RESET.store(false, Ordering::Release);
+        info!("🔄 POLL_USB_EVENTS: USB reset detected via atomic flag (DTRST done in ISR)");
 
-    // Track if reset has been handled to prevent infinite loops
-    static mut RESET_HANDLED: bool = false;
+        // Call USB reset slow path - only handles protocol stack state management
+        // DTRST operation already completed in ISR for optimal timing
+        usb_reset().await;
 
-    // Debug: Check individual flags to understand the ISR value
-    let urstif_set = isr.urstif().bit_is_set();
-    let rsmif_set = isr.rsmif().bit_is_set();
-    let suspif_set = isr.suspif().bit_is_set();
-    let soif_set = isr.sofif().bit_is_set();
-
-    info!("🔍 ISR_FLAGS: URSTIF={} RSMIF={} SUSPIF={} SOFIF={}",
-           urstif_set, rsmif_set, suspif_set, soif_set);
-
-    // Check for resume (RSMIF - Resume Interrupt Flag) FIRST
-    // This is bit 2 (0x00000004) and seems to be the sticky flag we're seeing
-    if rsmif_set {
-        info!("▶️  POLL_USB_EVENTS: USB resume detected (RSMIF)");
-        // Clear the resume interrupt flag - write 1 to clear
-        usb.isr().modify(|_, w| w.rsmif().set_bit());
-
-        // Also clear any pending reset state that might be causing issues
-        if urstif_set {
-            debug!("🔧 ISR_FLAGS: Also clearing URSTIF during resume");
-            usb.isr().modify(|_, w| w.urstif().set_bit());
-        }
-
-        return Event::Resume;
-    }
-
-    // Check for USB reset (URSTIF - bit 1, 0x00000002)
-    if urstif_set {
-        info!("🔄 POLL_USB_EVENTS: USB reset detected (URSTIF)");
-
-        // Clear the interrupt flag - try multiple approaches to ensure it's cleared
-        usb.isr().modify(|_, w| w.urstif().set_bit());
-
-        // Force reset and clear reset condition to properly handle the reset state
-        usb.csr().modify(|_, w| w.fres().set_bit());
-        usb.csr().modify(|_, w| w.fres().clear_bit());
-
-        // Force clear ALL interrupt flags to prevent sticky flag issues
+        // Force clear all interrupt flags to prevent sticky flag issues
+        let usb = unsafe { &*pac::Usb::ptr() };
         unsafe {
             usb.isr().write(|w| w.bits(0xFFFFFFFF));
         }
 
-        unsafe {
-            if !RESET_HANDLED {
-                info!("🔄 POLL_USB_EVENTS: Handling USB reset, returning PowerDetected");
-                RESET_HANDLED = true;
-                return Event::PowerDetected;
-            } else {
-                // Reset already handled, ignore further reset interrupts
-                debug!("🔄 POLL_USB_EVENTS: Reset already handled, ignoring");
-                return Event::Suspend;
-            }
-        }
+        info!("✅ POLL_USB_EVENTS: USB reset slow path handled, returning PowerDetected");
+        return Event::PowerDetected;
     }
 
-    // Check for SOF (Start of Frame) - this happens continuously during enumeration
-    if isr.sofif().bit_is_set() {
-        debug!("⏱️  POLL_USB_EVENTS: USB SOF detected");
-        usb.isr().modify(|_, w| w.sofif().set_bit()); // Clear flag
-        // SOF events are normal and shouldn't return events that stop polling
-        // Just clear the flag and continue
+    // 2. 检查Resume事件
+    if IRQ_RESUME.load(Ordering::Acquire) {
+        IRQ_RESUME.store(false, Ordering::Release);
+        info!("▶️  POLL_USB_EVENTS: USB resume detected via atomic flag");
+        return Event::Resume;
     }
 
-    // Check for suspend
-    if isr.suspif().bit_is_set() {
-        info!("⏸️  POLL_USB_EVENTS: USB suspend detected");
-        usb.isr().modify(|_, w| w.suspif().set_bit()); // Clear flag
+    // 3. 检查Suspend事件
+    if IRQ_SUSPEND.load(Ordering::Acquire) {
+        IRQ_SUSPEND.store(false, Ordering::Release);
+        info!("⏸️  POLL_USB_EVENTS: USB suspend detected via atomic flag");
+        return Event::Suspend;
+    }
+
+    // 4. 检查SOF事件 - 表示枚举成功
+    if IRQ_SOF.load(Ordering::Acquire) {
+        IRQ_SOF.store(false, Ordering::Release);
+        debug!("⏱️  POLL_USB_EVENTS: USB SOF detected via atomic flag");
+        // SOF事件是正常的，不需要返回特殊事件
+        // 继续检查其他事件
+    }
+
+    // 5. 检查Endpoint中断事件
+    let mut endpoint_event = false;
+
+    if IRQ_EP0.load(Ordering::Acquire) {
+        IRQ_EP0.store(false, Ordering::Release);
+        info!("📋 POLL_USB_EVENTS: EP0 interrupt detected via atomic flag");
+        endpoint_event = true;
+    }
+
+    if IRQ_EP1.load(Ordering::Acquire) {
+        IRQ_EP1.store(false, Ordering::Release);
+        info!("📥 POLL_USB_EVENTS: EP1 interrupt detected via atomic flag");
+        endpoint_event = true;
+    }
+
+    if IRQ_EP2.load(Ordering::Acquire) {
+        IRQ_EP2.store(false, Ordering::Release);
+        info!("📥 POLL_USB_EVENTS: EP2 interrupt detected via atomic flag");
+        endpoint_event = true;
+    }
+
+    if IRQ_EP3.load(Ordering::Acquire) {
+        IRQ_EP3.store(false, Ordering::Release);
+        info!("📥 POLL_USB_EVENTS: EP3 interrupt detected via atomic flag");
+        endpoint_event = true;
+    }
+
+    // 如果有endpoint事件，继续正常处理
+    // 设备配置现在通过SET_CONFIGURATION请求检测，而不是通过endpoint事件
+    if endpoint_event {
+        debug!("🔧 POLL_USB_EVENTS: Endpoint events processed, continuing poll");
         return Event::Suspend;
     }
 
@@ -1020,13 +1074,13 @@ async fn poll_usb_events(bus: &mut Bus<'_>) -> Event {
         return Event::PowerDetected;
     }
 
-    // No events detected - return suspend to indicate no activity
-    // Reduce logging frequency to avoid spam
+    // 没有检测到事件 - 返回Suspend表示无活动
+    // 减少日志频率避免spam
     static mut SUSPEND_COUNT: u32 = 0;
     unsafe {
         SUSPEND_COUNT += 1;
         if SUSPEND_COUNT % 100 == 1 {
-            debug!("⏸️  POLL_USB_EVENTS: No events detected, returning suspend ({})", SUSPEND_COUNT);
+            debug!("⏸️  POLL_USB_EVENTS: No atomic flags set, returning suspend ({})", SUSPEND_COUNT);
         }
     }
     Event::Suspend
@@ -1151,14 +1205,35 @@ fn set_endpoint_enabled(addr: EndpointAddress, enabled: bool) {
 fn enable_usb_device() {
     let usb = unsafe { &*pac::Usb::ptr() };
 
-    // Note: DPPUEN (DP pull-up) and interrupts are already enabled during initialization
-    // This function can be used for any additional runtime enable operations if needed
-    // Currently, all critical USB operations are handled in initialize_usb_hardware()
+    // 1. 显式设置 DPPUEN（连接）
+    info!("🚀 USB_BUS_ENABLE: DPPUEN set_bit");
+    usb.csr().modify(|r, w| unsafe {
+        // 使用 RMW 方式，只修改 DPPUEN，并保留其他可能需要的位（如 PDWN）
+        w.bits(0xFFFFFFFF);
+        w.dppuen().set_bit() 
+         // 如果需要，这里可以根据 r 来保留 r.pdwn().bit()
+    });
 
-    // Clear any pending interrupts that might have occurred since initialization
-    unsafe {
-        usb.isr().write(|w| w.bits(0xFFFFFFFF));
+    // 🔴 CRITICAL: Step 2 - Reset USB SRAM to reset DATA toggle states
+    // This resets all endpoint states including DATA0/DATA1 sequences
+    usb.csr().modify(|_, w| w.sramrstc().set_bit());
+
+          // Note: In embassy, we might need a different approach for delays
+    for _ in 0..1000 {
+        cortex_m::asm::nop();
     }
+
+    // Step 3: Clear SRAM reset
+    usb.csr().modify(|_, w| w.sramrstc().clear_bit());
+
+    // 2. 重新清除所有挂起的中断，为 Reset 做准备
+    // info!("🚀 USB_BUS_ENABLE: clean all interrupt");
+    // unsafe {
+    //     usb.isr().write(|w| w.bits(0xFFFFFFFF));
+    // }
+    
+    // 3. (可选但推荐) 确保 IER (中断使能寄存器) 处于正确状态
+    // 如果 disable_usb_device 清除了 IER，这里需要恢复它。
 }
 
 fn disable_usb_device() {
@@ -1218,22 +1293,31 @@ fn write_usb_sram_bytes(offset: usize, buf: &[u8]) {
 /// USB event signal for ISR to Task communication - avoids critical section deadlock
 static USB_EVENT_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
+/// Atomic flags for interrupt-to-async task bridging
+/// These flags are set in the ISR and cleared in the async task to avoid race conditions
+static IRQ_RESET: AtomicBool = AtomicBool::new(false);
+static IRQ_SUSPEND: AtomicBool = AtomicBool::new(false);
+static IRQ_RESUME: AtomicBool = AtomicBool::new(false);
+static IRQ_SOF: AtomicBool = AtomicBool::new(false);
+static IRQ_EP0: AtomicBool = AtomicBool::new(false);
+static IRQ_EP1: AtomicBool = AtomicBool::new(false);
+static IRQ_EP2: AtomicBool = AtomicBool::new(false);
+static IRQ_EP3: AtomicBool = AtomicBool::new(false);
+
+/// Device configuration state tracking
+static DEVICE_CONFIGURED: AtomicBool = AtomicBool::new(false);
+static DEVICE_CONFIG_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
 /// Wait for USB event and reset the signal
 pub async fn wait_for_usb_event() {
     USB_EVENT_SIGNAL.wait().await;
 }
 
-// USB interrupt handler for the executor
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn USB() {
-    // Safety: This is only called from the USB interrupt
-    unsafe { on_usb_interrupt() }
-}
 
 /// USB interrupt handler
 ///
 /// This function should be called from the global interrupt handler for USB interrupts
-/// Uses Signal to avoid critical section deadlock with timer interrupts
+/// Uses atomic flags to bridge interrupt context to async tasks - fast ISR approach
 pub unsafe fn on_usb_interrupt() {
     let usb = unsafe { &*pac::Usb::ptr() };
     let isr = usb.isr().read();
@@ -1243,163 +1327,96 @@ pub unsafe fn on_usb_interrupt() {
     info!("🔌 USB_IRQ: ISR = {:#010x}", isr.bits());
 
     // Handle reset interrupt - CRITICAL for enumeration
+    // 🔴 关键修复：在ISR中只执行最少的操作：DTRST和基本状态设置
     if isr.urstif().bit_is_set() {
-        info!("🔄 USB_IRQ_RESET: USB reset detected - ENUMERATION STARTING!");
+        // 1. 设置软件状态标志 - 原子操作，无锁
+        IRQ_RESET.store(true, Ordering::Release);
 
-        // Clear reset interrupt flag
+        // 2. 清除 URSTIF 硬件标志
         usb.isr().modify(|_, w| w.urstif().set_bit());
 
-        // Reset USB peripheral state properly
-        usb.csr().modify(|_, w| w.fres().set_bit());
-        usb.csr().modify(|_, w| w.fres().clear_bit());
+        // 3. 🔴 关键修复：立即执行 EP0 DATA PID 复位 (SRAMRSTC)
+        // 这是唯一必须在ISR中完成的时序关键操作
+        usb.csr().modify(|_, w| w.sramrstc().set_bit());
 
-        // Re-enable pull-up after reset
-        usb.csr().modify(|_, w| w.dppuen().set_bit());
+        usb.csr().modify(|_, w| w.sramrstc().clear_bit());
 
         event_signaled = true;
-        info!("✅ USB_IRQ_RESET: Reset handled, device ready for enumeration");
+        info!("✅ USB_IRQ_RESET: Reset flag set and DTRST executed in ISR only");
+        let csr_after_dtrst = usb.csr().read().bits();
+        info!("🔍 CSR_AFTER_DTRST: {:#010x}", csr_after_dtrst);
     }
 
     // Handle suspend interrupt
     if isr.suspif().bit_is_set() {
-        info!("⏸️  USB_IRQ_SUSPEND: USB suspend detected");
+        // 1. 设置软件状态标志
+        IRQ_SUSPEND.store(true, Ordering::Release);
+
+        // 2. 清除 SUSPIF 硬件标志
         usb.isr().modify(|_, w| w.suspif().set_bit());
+
         event_signaled = true;
+        info!("✅ USB_IRQ_SUSPEND: Suspend flag set, deferring handling to async task");
     }
 
     // Handle resume interrupt
     if isr.rsmif().bit_is_set() {
-        info!("▶️  USB_IRQ_RESUME: USB resume detected");
+        // 1. 设置软件状态标志
+        IRQ_RESUME.store(true, Ordering::Release);
+
+        // 2. 清除 RSMIF 硬件标志
         usb.isr().modify(|_, w| w.rsmif().set_bit());
+
         event_signaled = true;
+        info!("✅ USB_IRQ_RESUME: Resume flag set, deferring handling to async task");
     }
 
     // Handle endpoint interrupts - CRITICAL for control transfers
-    // Process endpoint-specific interrupt flags based on HT32 documentation
-    for ep in 0..8 {
+    // 只设置标志位，具体处理留给异步任务
+    for ep in 0..4 { // 只处理EP0-3，其他endpoint暂未实现
         let ep_flag = match ep {
             0 => isr.ep0if().bit_is_set(),
             1 => isr.ep1if().bit_is_set(),
             2 => isr.ep2if().bit_is_set(),
             3 => isr.ep3if().bit_is_set(),
-            4 => isr.ep4if().bit_is_set(),
-            5 => isr.ep5if().bit_is_set(),
-            6 => isr.ep6if().bit_is_set(),
-            7 => isr.ep7if().bit_is_set(),
             _ => false,
         };
 
         if ep_flag {
-            info!("📨 USB_IRQ_EP{}: Endpoint {} interrupt detected", ep, ep);
-
-            // Handle endpoint-specific interrupt flags
+            // 设置对应endpoint的原子标志
             match ep {
-                0 => {
-                    // EP0: Check specific interrupt types (SETUP, OUT, IN)
-                    let ep0_isr = usb.ep0isr().read();
-
-                    if ep0_isr.sdrxif().bit_is_set() {
-                        info!("📋 USB_IRQ_EP0_SETUP: SETUP packet received - ENUMERATION REQUEST!");
-                        // SETUP packet handling - critical for enumeration
-                        usb.ep0isr().modify(|_, w| w.sdrxif().set_bit());
-                        event_signaled = true;
-                    }
-
-                    if ep0_isr.odrxif().bit_is_set() {
-                        info!("📥 USB_IRQ_EP0_OUT: OUT data received on EP0");
-                        // OUT data received on EP0
-                        usb.ep0isr().modify(|_, w| w.odrxif().set_bit());
-                        event_signaled = true;
-                    }
-
-                    if ep0_isr.idtxif().bit_is_set() {
-                        info!("📤 USB_IRQ_EP0_IN: IN data transmitted on EP0");
-                        // IN data transmitted on EP0
-                        usb.ep0isr().modify(|_, w| w.idtxif().set_bit());
-                        event_signaled = true;
-                    }
-                }
-                1 => {
-                    // EP1: Check OUT/IN interrupts
-                    let ep1_isr = usb.ep1isr().read();
-
-                    if ep1_isr.odrxif().bit_is_set() {
-                        info!("📥 USB_IRQ_EP1_OUT: OUT data received on EP1");
-                        usb.ep1isr().modify(|_, w| w.odrxif().set_bit());
-                        event_signaled = true;
-                    }
-
-                    if ep1_isr.idtxif().bit_is_set() {
-                        info!("📤 USB_IRQ_EP1_IN: IN data transmitted on EP1");
-                        usb.ep1isr().modify(|_, w| w.idtxif().set_bit());
-                        event_signaled = true;
-                    }
-                }
-                2 => {
-                    // EP2: Check OUT/IN interrupts
-                    let ep2_isr = usb.ep2isr().read();
-
-                    if ep2_isr.odrxif().bit_is_set() {
-                        info!("📥 USB_IRQ_EP2_OUT: OUT data received on EP2");
-                        usb.ep2isr().modify(|_, w| w.odrxif().set_bit());
-                        event_signaled = true;
-                    }
-
-                    if ep2_isr.idtxif().bit_is_set() {
-                        info!("📤 USB_IRQ_EP2_IN: IN data transmitted on EP2");
-                        usb.ep2isr().modify(|_, w| w.idtxif().set_bit());
-                        event_signaled = true;
-                    }
-                }
-                3 => {
-                    // EP3: Check OUT/IN interrupts
-                    let ep3_isr = usb.ep3isr().read();
-
-                    if ep3_isr.odrxif().bit_is_set() {
-                        info!("📥 USB_IRQ_EP3_OUT: OUT data received on EP3");
-                        usb.ep3isr().modify(|_, w| w.odrxif().set_bit());
-                        event_signaled = true;
-                    }
-
-                    if ep3_isr.idtxif().bit_is_set() {
-                        info!("📤 USB_IRQ_EP3_IN: IN data transmitted on EP3");
-                        usb.ep3isr().modify(|_, w| w.idtxif().set_bit());
-                        event_signaled = true;
-                    }
-                }
-                4..=7 => {
-                    // EP4-7: Similar OUT/IN interrupt handling (can be expanded as needed)
-                    info!("📨 USB_IRQ_EP{}: Endpoint {} interrupt - data transfer", ep, ep);
-                    event_signaled = true;
-                }
+                0 => IRQ_EP0.store(true, Ordering::Release),
+                1 => IRQ_EP1.store(true, Ordering::Release),
+                2 => IRQ_EP2.store(true, Ordering::Release),
+                3 => IRQ_EP3.store(true, Ordering::Release),
                 _ => {}
             }
 
-            // Clear the global endpoint interrupt flag
+            // 清除硬件endpoint中断标志
             match ep {
                 0 => usb.isr().modify(|_, w| w.ep0if().set_bit()),
                 1 => usb.isr().modify(|_, w| w.ep1if().set_bit()),
                 2 => usb.isr().modify(|_, w| w.ep2if().set_bit()),
                 3 => usb.isr().modify(|_, w| w.ep3if().set_bit()),
-                4 => usb.isr().modify(|_, w| w.ep4if().set_bit()),
-                5 => usb.isr().modify(|_, w| w.ep5if().set_bit()),
-                6 => usb.isr().modify(|_, w| w.ep6if().set_bit()),
-                7 => usb.isr().modify(|_, w| w.ep7if().set_bit()),
                 _ => {}
             }
+
+            event_signaled = true;
+            info!("✅ USB_IRQ_EP{}: Endpoint {} flag set, deferring handling to async task", ep, ep);
         }
     }
 
     // Handle SOF (Start of Frame) interrupts - indicates successful enumeration
     if isr.sofif().bit_is_set() {
-        info!("⏰ USB_IRQ_SOF: Start of Frame - ENUMERATION SUCCESSFUL!");
+        // 设置SOF标志
+        IRQ_SOF.store(true, Ordering::Release);
         usb.isr().modify(|_, w| w.sofif().set_bit());
-        // SOF indicates host is communicating successfully
         event_signaled = true;
+        info!("✅ USB_IRQ_SOF: SOF flag set, enumeration successful");
     }
 
-    // Signal the USB event outside of critical section context
-    // This avoids deadlock when timer interrupts try to wake tasks
+    // 最后唤醒异步任务处理具体逻辑
+    // 这避免了在ISR中做复杂处理，提高了中断响应速度
     if event_signaled {
         USB_EVENT_SIGNAL.signal(());
         info!("🚀 USB_IRQ_SIGNAL: USB event signaled to embassy-usb stack");
