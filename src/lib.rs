@@ -89,6 +89,9 @@ pub mod timer;
 pub mod uart;
 #[cfg(feature = "usb")]
 pub mod usb;
+
+#[cfg(feature = "usb")]
+pub use usb::InterruptHandler;
 pub mod flash;
 
 // Re-exports for convenience
