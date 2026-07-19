@@ -12,6 +12,7 @@ use embassy_ht32f523xx::gpio::{Pin, mode};
 use embassy_ht32f523xx::usb::{Driver, Config as UsbConfig};
 use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
+use defmt_rtt as _;
 use panic_probe as _;
 
 use ht32_bsp::Board;

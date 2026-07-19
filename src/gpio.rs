@@ -499,6 +499,22 @@ impl<const PORT: char, const PIN: u8> Pin<PORT, PIN, mode::Input> {
     }
 }
 
+impl Pin<'C', 6, mode::Input> {
+    /// Configure PC6 for the dedicated USB D- function.
+    pub fn into_usb_dm(self) -> Pin<'C', 6, mode::AlternateFunction<0>> {
+        configure_usb_pins();
+        Pin { _mode: PhantomData }
+    }
+}
+
+impl Pin<'C', 7, mode::Input> {
+    /// Configure PC7 for the dedicated USB D+ function.
+    pub fn into_usb_dp(self) -> Pin<'C', 7, mode::AlternateFunction<0>> {
+        configure_usb_pins();
+        Pin { _mode: PhantomData }
+    }
+}
+
 /// GPIO Output pin
 pub type Output<'d> = Pin<'A', 0, mode::Output>; // Simplified for now
 
@@ -559,6 +575,29 @@ fn configure_pull<const PORT: char, const PIN: u8>(pull: Pull) {
             gpio_impl!(PORT, PIN, enable_pulldown);
         }
     }
+}
+
+/// Apply the electrical configuration required by the dedicated USB PHY.
+///
+/// Unlike most alternate functions, PC6/PC7 must remain inputs, have their
+/// GPIO input buffers and pulls disabled, and select AF0.
+pub(crate) fn configure_usb_pins() {
+    const USB_PINS: u32 = (1 << 6) | (1 << 7);
+
+    let gpio = unsafe { &*Gpioc::ptr() };
+    gpio.dircr()
+        .modify(|r, w| unsafe { w.bits(r.bits() & !USB_PINS) });
+    gpio.iner()
+        .modify(|r, w| unsafe { w.bits(r.bits() & !USB_PINS) });
+    gpio.pur()
+        .modify(|r, w| unsafe { w.bits(r.bits() & !USB_PINS) });
+    gpio.pdr()
+        .modify(|r, w| unsafe { w.bits(r.bits() & !USB_PINS) });
+
+    let afio = unsafe { &*Afio::ptr() };
+    const USB_AF_MASK: u32 = (0x0f << (6 * 4)) | (0x0f << (7 * 4));
+    afio.gpccfglr()
+        .modify(|r, w| unsafe { w.bits(r.bits() & !USB_AF_MASK) });
 }
 
 

@@ -5,6 +5,7 @@
 //! status bits use toggle-on-write-one semantics; treating them as ordinary
 //! read/write bits prevents NAK and STALL transitions from taking effect.
 
+use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::ptr::{read_volatile, write_volatile};
@@ -42,14 +43,12 @@ const USB_SRAM_BASE: *mut u32 = 0x400A_A000 as *mut u32;
 // both the TX allocation size and the offset from TX to RX.
 const EP0_SETUP_OFFSET: usize = 0;
 const EP0_TX_OFFSET: usize = 8;
-const EP0_RX_OFFSET: usize = EP0_TX_OFFSET + MAX_PACKET_SIZE as usize;
-const DATA_EP_BASE: usize = EP0_RX_OFFSET + MAX_PACKET_SIZE as usize;
+const DATA_EP_BASE: usize = EP0_TX_OFFSET + 2 * MAX_PACKET_SIZE as usize;
+const _: () = assert!(DATA_EP_BASE + (EP_COUNT - 1) * MAX_PACKET_SIZE as usize <= USB_SRAM_SIZE);
 
 // USB global register bits.
 const CSR_PDWN: u32 = 1 << 2;
 const CSR_LPMODE: u32 = 1 << 3;
-const CSR_ADRSET: u32 = 1 << 8;
-const CSR_SRAMRSTC: u32 = 1 << 9;
 const CSR_DPPUEN: u32 = 1 << 10;
 const CSR_DPWKEN: u32 = 1 << 11;
 
@@ -62,8 +61,6 @@ const IER_EP0IE: u32 = 1 << 8;
 const ISR_URSTIF: u32 = 1 << 2;
 const ISR_RSMIF: u32 = 1 << 3;
 const ISR_SUSPIF: u32 = 1 << 4;
-const ISR_ESOFIF: u32 = 1 << 5;
-
 // Endpoint registers and fields.
 const EP_REG_STRIDE: usize = 0x14;
 const EP_CSR_OFFSET: usize = 0x00;
@@ -72,24 +69,29 @@ const EP_ISR_OFFSET: usize = 0x08;
 const EP_TCR_OFFSET: usize = 0x0c;
 const EP_CFGR_OFFSET: usize = 0x10;
 
+const EP_CSR_DTGTX: u32 = 1 << 0;
 const EP_CSR_NAKTX: u32 = 1 << 1;
 const EP_CSR_STLTX: u32 = 1 << 2;
+const EP_CSR_DTGRX: u32 = 1 << 3;
 const EP_CSR_NAKRX: u32 = 1 << 4;
 const EP_CSR_STLRX: u32 = 1 << 5;
 
 const EP_INT_ODRX: u32 = 1 << 1;
+const EP_INT_ODOV: u32 = 1 << 2;
 const EP_INT_IDTX: u32 = 1 << 4;
+const EP_INT_UER: u32 = 1 << 7;
 const EP_INT_SDRX: u32 = 1 << 9;
+const EP_INT_SDER: u32 = 1 << 10;
+const EP_INT_ZLRX: u32 = 1 << 11;
 
 const EP_CFGR_EPEN: u32 = 1 << 31;
 const EP_CFGR_EPTYPE: u32 = 1 << 29;
 const EP_CFGR_EPDIR: u32 = 1 << 28;
 
-const NEW_WAKER: AtomicWaker = AtomicWaker::new();
 static BUS_WAKER: AtomicWaker = AtomicWaker::new();
-static EP_IN_WAKERS: [AtomicWaker; EP_COUNT] = [NEW_WAKER; EP_COUNT];
-static EP_OUT_WAKERS: [AtomicWaker; EP_COUNT] = [NEW_WAKER; EP_COUNT];
-static EP_ENABLED_WAKERS: [AtomicWaker; EP_COUNT] = [NEW_WAKER; EP_COUNT];
+static EP_IN_WAKERS: [AtomicWaker; EP_COUNT] = [const { AtomicWaker::new() }; EP_COUNT];
+static EP_OUT_WAKERS: [AtomicWaker; EP_COUNT] = [const { AtomicWaker::new() }; EP_COUNT];
+static EP_ENABLED_WAKERS: [AtomicWaker; EP_COUNT] = [const { AtomicWaker::new() }; EP_COUNT];
 
 static BUS_RESET: AtomicBool = AtomicBool::new(false);
 static BUS_SUSPEND: AtomicBool = AtomicBool::new(false);
@@ -98,6 +100,16 @@ static EP0_SETUP: AtomicBool = AtomicBool::new(false);
 static EP_IN_COMPLETE: [AtomicBool; EP_COUNT] = [const { AtomicBool::new(false) }; EP_COUNT];
 static EP_OUT_READY: [AtomicBool; EP_COUNT] = [const { AtomicBool::new(false) }; EP_COUNT];
 static EP_ENABLED: [AtomicBool; EP_COUNT] = [const { AtomicBool::new(false) }; EP_COUNT];
+static EP_TRANSFER_ERROR: [AtomicBool; EP_COUNT] = [const { AtomicBool::new(false) }; EP_COUNT];
+static EP_BUFFER_OVERFLOW: [AtomicBool; EP_COUNT] = [const { AtomicBool::new(false) }; EP_COUNT];
+static USB_TAKEN: AtomicBool = AtomicBool::new(false);
+
+struct SetupPacket(UnsafeCell<[u8; 8]>);
+
+// Access is serialized by `critical_section`; the USB ISR is the sole writer.
+unsafe impl Sync for SetupPacket {}
+
+static SETUP_PACKET: SetupPacket = SetupPacket(UnsafeCell::new([0; 8]));
 
 /// USB DM pin. HT32F523xx exposes USB on the dedicated PC6 function.
 pub type UsbDm<const PORT: char, const PIN: u8> = Pin<PORT, PIN, mode::AlternateFunction<0>>;
@@ -125,32 +137,25 @@ pub struct Usb {
 }
 
 impl Usb {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
+        critical_section::with(|_| {
+            assert!(
+                !USB_TAKEN.load(Ordering::Acquire),
+                "USB peripheral token has already been taken"
+            );
+            USB_TAKEN.store(true, Ordering::Release);
+        });
         Self { _private: () }
     }
 }
 
-impl Default for Usb {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Driver configuration.
+#[derive(Default)]
 pub struct Config {
     /// The current controller does not expose a usable VBUS detector.
     pub vbus_detection: bool,
     /// Reserved for a future board-specific VBUS detector.
     pub enable_vbus_detect: bool,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            vbus_detection: false,
-            enable_vbus_detect: false,
-        }
-    }
 }
 
 /// Embassy USB driver.
@@ -164,6 +169,8 @@ impl<'d> Driver<'d> {
         if config.vbus_detection || config.enable_vbus_detect {
             warn!("HT32 USB VBUS detection is not implemented; using always-powered mode");
         }
+        crate::gpio::configure_usb_pins();
+        reset_software_state();
         initialize_hardware();
         Self {
             _phantom: PhantomData,
@@ -201,6 +208,7 @@ impl<'d> Driver<'d> {
 pub struct Bus<'d> {
     _phantom: PhantomData<&'d mut Usb>,
     power_detected: bool,
+    control_max_packet_size: u16,
 }
 
 pub struct ControlPipe<'d> {
@@ -268,12 +276,16 @@ impl<'d> embassy_usb_driver::Driver<'d> for Driver<'d> {
     }
 
     fn start(self, control_max_packet_size: u16) -> (Self::Bus, Self::ControlPipe) {
-        let control_max_packet_size = control_max_packet_size.min(MAX_PACKET_SIZE);
+        assert!(
+            matches!(control_max_packet_size, 8 | 16 | 32 | 64),
+            "USB control max packet size must be 8, 16, 32, or 64 bytes"
+        );
         configure_control_endpoint(control_max_packet_size);
         (
             Bus {
                 _phantom: PhantomData,
                 power_detected: false,
+                control_max_packet_size,
             },
             ControlPipe {
                 _phantom: PhantomData,
@@ -331,8 +343,11 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
             return Err(EndpointError::Disabled);
         }
 
-        EP_OUT_READY[ep].store(false, Ordering::Release);
-        set_ep_status(ep, EP_CSR_NAKRX, false);
+        // CLEAR_FEATURE(ENDPOINT_HALT) may already have armed OUT. Preserve a
+        // packet that arrived between clearing STALL and starting this read.
+        if !EP_OUT_READY[ep].load(Ordering::Acquire) {
+            set_ep_status(ep, EP_CSR_NAKRX, false);
+        }
         wait_endpoint_transfer(ep, false).await?;
 
         let len = read_ep_reg(ep, EP_TCR_OFFSET) as usize;
@@ -359,10 +374,7 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
             }
         })
         .await;
-
-        let mut packet = [0; 8];
-        read_usb_sram(EP0_SETUP_OFFSET, &mut packet);
-        packet
+        read_setup_packet()
     }
 
     async fn data_out(
@@ -379,7 +391,7 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
         if len > data.len() {
             return Err(EndpointError::BufferOverflow);
         }
-        read_usb_sram(EP0_RX_OFFSET, &mut data[..len]);
+        read_usb_sram(ep0_rx_offset(self.max_packet_size), &mut data[..len]);
         Ok(len)
     }
 
@@ -422,8 +434,10 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
     }
 
     async fn accept_set_address(&mut self, addr: u8) {
-        self.accept().await;
+        // HT32 latches DEVAR for the status stage (USB_EARLY_SET_ADDRESS).
+        // Program it before transmitting the zero-length status packet.
         set_device_address(addr);
+        self.accept().await;
     }
 }
 
@@ -437,7 +451,7 @@ impl<'d> embassy_usb_driver::Bus for Bus<'d> {
         poll_fn(|cx| {
             BUS_WAKER.register(cx.waker());
             if take_flag(&BUS_RESET) {
-                reset_hardware();
+                reset_hardware(self.control_max_packet_size);
                 Poll::Ready(Event::Reset)
             } else if take_flag(&BUS_SUSPEND) {
                 Poll::Ready(Event::Suspend)
@@ -451,12 +465,21 @@ impl<'d> embassy_usb_driver::Bus for Bus<'d> {
     }
 
     fn endpoint_set_stalled(&mut self, addr: EndpointAddress, stalled: bool) {
-        let bit = if addr.is_in() {
-            EP_CSR_STLTX
+        let ep = addr.index();
+        let (stall_bit, toggle_bit) = if addr.is_in() {
+            (EP_CSR_STLTX, EP_CSR_DTGTX)
         } else {
-            EP_CSR_STLRX
+            (EP_CSR_STLRX, EP_CSR_DTGRX)
         };
-        set_ep_status(addr.index(), bit, stalled);
+        set_ep_status(ep, stall_bit, stalled);
+        if !stalled {
+            // CLEAR_FEATURE(ENDPOINT_HALT) restarts the data toggle at DATA0.
+            set_ep_status(ep, toggle_bit, false);
+            if addr.is_out() {
+                EP_OUT_READY[ep].store(false, Ordering::Release);
+                set_ep_status(ep, EP_CSR_NAKRX, false);
+            }
+        }
     }
 
     fn endpoint_is_stalled(&mut self, addr: EndpointAddress) -> bool {
@@ -477,10 +500,27 @@ impl<'d> embassy_usb_driver::Bus for Bus<'d> {
                 value & !EP_CFGR_EPEN
             }
         });
+        let usb = usb_regs();
+        unsafe {
+            usb.ier().modify(|r, w| {
+                let bit = IER_EP0IE << ep;
+                w.bits(if enabled {
+                    r.bits() | bit
+                } else {
+                    r.bits() & !bit
+                })
+            });
+        }
         EP_ENABLED[ep].store(enabled, Ordering::Release);
-        if !enabled {
-            EP_IN_COMPLETE[ep].store(false, Ordering::Release);
-            EP_OUT_READY[ep].store(false, Ordering::Release);
+        EP_IN_COMPLETE[ep].store(false, Ordering::Release);
+        EP_OUT_READY[ep].store(false, Ordering::Release);
+        EP_TRANSFER_ERROR[ep].store(false, Ordering::Release);
+        EP_BUFFER_OVERFLOW[ep].store(false, Ordering::Release);
+        set_ep_status(ep, EP_CSR_DTGTX, false);
+        set_ep_status(ep, EP_CSR_DTGRX, false);
+        if enabled {
+            set_ep_status(ep, EP_CSR_NAKTX, true);
+            set_ep_status(ep, EP_CSR_NAKRX, true);
         }
         EP_ENABLED_WAKERS[ep].wake();
         EP_IN_WAKERS[ep].wake();
@@ -489,6 +529,12 @@ impl<'d> embassy_usb_driver::Bus for Bus<'d> {
 
     async fn enable(&mut self) {
         let usb = usb_regs();
+        unsafe {
+            usb.ier()
+                .write(|w| w.bits(IER_UGIE | IER_URSTIE | IER_RSMIE | IER_SUSPIE | IER_EP0IE));
+            cortex_m::peripheral::NVIC::unpend(pac::Interrupt::USB);
+            cortex_m::peripheral::NVIC::unmask(pac::Interrupt::USB);
+        }
         usb.csr().modify(|_, w| w.dppuen().set_bit());
         info!("USB connected");
     }
@@ -497,8 +543,15 @@ impl<'d> embassy_usb_driver::Bus for Bus<'d> {
         let usb = usb_regs();
         usb.csr().modify(|_, w| w.dppuen().clear_bit());
         unsafe { usb.ier().write(|w| w.bits(0)) };
+        cortex_m::peripheral::NVIC::mask(pac::Interrupt::USB);
+        self.power_detected = false;
         for ep in 1..EP_COUNT {
+            modify_ep_reg(ep, EP_CFGR_OFFSET, |value| value & !EP_CFGR_EPEN);
             EP_ENABLED[ep].store(false, Ordering::Release);
+            EP_IN_COMPLETE[ep].store(false, Ordering::Release);
+            EP_OUT_READY[ep].store(false, Ordering::Release);
+            EP_TRANSFER_ERROR[ep].store(false, Ordering::Release);
+            EP_BUFFER_OVERFLOW[ep].store(false, Ordering::Release);
             EP_ENABLED_WAKERS[ep].wake();
             EP_IN_WAKERS[ep].wake();
             EP_OUT_WAKERS[ep].wake();
@@ -536,6 +589,20 @@ fn validate_packet_size(max_packet_size: u16) -> Result<(), EndpointAllocError> 
     }
 }
 
+fn reset_software_state() {
+    BUS_RESET.store(false, Ordering::Release);
+    BUS_SUSPEND.store(false, Ordering::Release);
+    BUS_RESUME.store(false, Ordering::Release);
+    EP0_SETUP.store(false, Ordering::Release);
+    for ep in 0..EP_COUNT {
+        EP_IN_COMPLETE[ep].store(false, Ordering::Release);
+        EP_OUT_READY[ep].store(false, Ordering::Release);
+        EP_ENABLED[ep].store(ep == 0, Ordering::Release);
+        EP_TRANSFER_ERROR[ep].store(false, Ordering::Release);
+        EP_BUFFER_OVERFLOW[ep].store(false, Ordering::Release);
+    }
+}
+
 fn initialize_hardware() {
     let usb = usb_regs();
 
@@ -544,7 +611,8 @@ fn initialize_hardware() {
     unsafe {
         usb.csr()
             .write(|w| w.bits(CSR_DPWKEN | CSR_LPMODE | CSR_PDWN));
-        usb.isr().write(|w| w.bits(!ISR_ESOFIF));
+        // Global USB flags are W1C; clear the complete reset-time snapshot.
+        usb.isr().write(|w| w.bits(u32::MAX));
     }
     usb.csr().modify(|_, w| w.dpwken().clear_bit());
 
@@ -557,7 +625,7 @@ fn initialize_hardware() {
     }
 }
 
-fn reset_hardware() {
+fn reset_hardware(control_max_packet_size: u16) {
     let usb = usb_regs();
     let pull_up = usb.csr().read().bits() & CSR_DPPUEN;
 
@@ -572,6 +640,8 @@ fn reset_hardware() {
     for ep in 0..EP_COUNT {
         EP_IN_COMPLETE[ep].store(false, Ordering::Release);
         EP_OUT_READY[ep].store(false, Ordering::Release);
+        EP_TRANSFER_ERROR[ep].store(false, Ordering::Release);
+        EP_BUFFER_OVERFLOW[ep].store(false, Ordering::Release);
         if ep != 0 {
             EP_ENABLED[ep].store(false, Ordering::Release);
             modify_ep_reg(ep, EP_CFGR_OFFSET, |value| value & !EP_CFGR_EPEN);
@@ -581,7 +651,7 @@ fn reset_hardware() {
         EP_OUT_WAKERS[ep].wake();
     }
 
-    configure_control_endpoint(MAX_PACKET_SIZE);
+    configure_control_endpoint(control_max_packet_size);
     unsafe {
         usb.ier()
             .write(|w| w.bits(IER_UGIE | IER_URSTIE | IER_RSMIE | IER_SUSPIE | IER_EP0IE));
@@ -590,18 +660,31 @@ fn reset_hardware() {
 
 fn configure_control_endpoint(max_packet_size: u16) {
     // The SETUP area is fixed at SRAM offset zero. Hardware TX begins at
-    // EPBUFA=8 and RX begins at EPBUFA+EPLEN=72.
+    // EPBUFA=8 and RX begins at EPBUFA+EPLEN.
     let cfgr = EP_CFGR_EPEN | ((max_packet_size as u32) << 10) | EP0_TX_OFFSET as u32;
     write_ep_reg(0, EP_CFGR_OFFSET, cfgr);
-    write_ep_reg(0, EP_IER_OFFSET, EP_INT_SDRX | EP_INT_IDTX | EP_INT_ODRX);
+    write_ep_reg(
+        0,
+        EP_IER_OFFSET,
+        EP_INT_SDRX
+            | EP_INT_IDTX
+            | EP_INT_ODRX
+            | EP_INT_ODOV
+            | EP_INT_UER
+            | EP_INT_SDER
+            | EP_INT_ZLRX,
+    );
     write_ep_reg(0, EP_ISR_OFFSET, 0x0fff);
+    set_ep_status(0, EP_CSR_NAKTX, true);
+    set_ep_status(0, EP_CSR_NAKRX, true);
     EP_ENABLED[0].store(true, Ordering::Release);
 }
 
 fn configure_data_endpoint(addr: EndpointAddress, ep_type: EndpointType, max_packet_size: u16) {
     let ep = addr.index();
+    let allocation_size = align4(max_packet_size);
     let mut cfgr = (endpoint_buffer_offset(ep) as u32)
-        | ((max_packet_size as u32) << 10)
+        | ((allocation_size as u32) << 10)
         | ((ep as u32) << 24);
     if addr.is_in() {
         cfgr |= EP_CFGR_EPDIR;
@@ -611,14 +694,14 @@ fn configure_data_endpoint(addr: EndpointAddress, ep_type: EndpointType, max_pac
     }
 
     write_ep_reg(ep, EP_CFGR_OFFSET, cfgr);
-    write_ep_reg(ep, EP_IER_OFFSET, EP_INT_ODRX | EP_INT_IDTX);
+    write_ep_reg(
+        ep,
+        EP_IER_OFFSET,
+        EP_INT_ODRX | EP_INT_IDTX | EP_INT_ODOV | EP_INT_UER | EP_INT_ZLRX,
+    );
     write_ep_reg(ep, EP_ISR_OFFSET, 0x0fff);
-
-    let usb = usb_regs();
-    unsafe {
-        usb.ier()
-            .modify(|r, w| w.bits(r.bits() | (IER_EP0IE << ep)));
-    }
+    set_ep_status(ep, EP_CSR_NAKTX, true);
+    set_ep_status(ep, EP_CSR_NAKRX, true);
 }
 
 fn set_device_address(addr: u8) {
@@ -655,6 +738,10 @@ async fn wait_endpoint_transfer(ep: usize, input: bool) -> Result<(), EndpointEr
         waker.register(cx.waker());
         if !EP_ENABLED[ep].load(Ordering::Acquire) {
             Poll::Ready(Err(EndpointError::Disabled))
+        } else if take_flag(&EP_BUFFER_OVERFLOW[ep]) {
+            Poll::Ready(Err(EndpointError::BufferOverflow))
+        } else if take_flag(&EP_TRANSFER_ERROR[ep]) {
+            Poll::Ready(Err(EndpointError::Disabled))
         } else if take_flag(flag) {
             Poll::Ready(Ok(()))
         } else {
@@ -680,6 +767,10 @@ async fn wait_control_transfer(input: bool) -> Result<(), EndpointError> {
         waker.register(cx.waker());
         if EP0_SETUP.load(Ordering::Acquire) {
             Poll::Ready(Err(EndpointError::Disabled))
+        } else if take_flag(&EP_BUFFER_OVERFLOW[0]) {
+            Poll::Ready(Err(EndpointError::BufferOverflow))
+        } else if take_flag(&EP_TRANSFER_ERROR[0]) {
+            Poll::Ready(Err(EndpointError::Disabled))
         } else if take_flag(flag) {
             Poll::Ready(Ok(()))
         } else {
@@ -693,6 +784,14 @@ fn endpoint_buffer_offset(ep: usize) -> usize {
     let offset = DATA_EP_BASE + (ep - 1) * MAX_PACKET_SIZE as usize;
     debug_assert!(offset + MAX_PACKET_SIZE as usize <= USB_SRAM_SIZE);
     offset
+}
+
+const fn ep0_rx_offset(max_packet_size: u16) -> usize {
+    EP0_TX_OFFSET + max_packet_size as usize
+}
+
+const fn align4(value: u16) -> u16 {
+    (value + 3) & !3
 }
 
 // Cortex-M0+ has no atomic read-modify-write instructions. The target's
@@ -729,6 +828,18 @@ fn write_usb_sram(offset: usize, data: &[u8]) {
     }
 }
 
+fn capture_setup_packet() {
+    let mut packet = [0; 8];
+    read_usb_sram(EP0_SETUP_OFFSET, &mut packet);
+    critical_section::with(|_| unsafe {
+        *SETUP_PACKET.0.get() = packet;
+    });
+}
+
+fn read_setup_packet() -> [u8; 8] {
+    critical_section::with(|_| unsafe { *SETUP_PACKET.0.get() })
+}
+
 fn usb_regs() -> &'static pac::usb::RegisterBlock {
     unsafe { &*pac::Usb::ptr() }
 }
@@ -762,23 +873,44 @@ fn set_ep_status(ep: usize, bit: u32, desired: bool) {
 }
 
 fn handle_endpoint_interrupt(ep: usize) {
-    let flags = read_ep_reg(ep, EP_ISR_OFFSET) & read_ep_reg(ep, EP_IER_OFFSET);
-    if flags == 0 {
-        return;
+    let raw_flags = read_ep_reg(ep, EP_ISR_OFFSET) & 0x0fff;
+    let flags = raw_flags & read_ep_reg(ep, EP_IER_OFFSET);
+
+    if ep == 0 && flags & EP_INT_SDRX != 0 && flags & EP_INT_SDER == 0 {
+        // Snapshot SETUP before acknowledging SDRX. This prevents a later
+        // packet from producing a mixed eight-byte request in task context.
+        capture_setup_packet();
     }
 
     // Endpoint interrupt flags are W1C and must be cleared before the global
-    // EPn flag. A global ISR read/modify/write would clear unrelated events.
-    write_ep_reg(ep, EP_ISR_OFFSET, flags);
+    // EPn flag. Clear even disabled/unexpected flags to avoid an IRQ storm.
+    if raw_flags != 0 {
+        write_ep_reg(ep, EP_ISR_OFFSET, raw_flags);
+    }
+    unsafe {
+        usb_regs().isr().write(|w| w.bits(IER_EP0IE << ep));
+    }
 
+    if ep == 0 && flags & EP_INT_SDER != 0 {
+        EP0_SETUP.store(false, Ordering::Release);
+        EP_TRANSFER_ERROR[0].store(true, Ordering::Release);
+        EP_OUT_WAKERS[0].wake();
+        EP_IN_WAKERS[0].wake();
+        return;
+    }
     if ep == 0 && flags & EP_INT_SDRX != 0 {
+        EP_TRANSFER_ERROR[0].store(false, Ordering::Release);
+        EP_BUFFER_OVERFLOW[0].store(false, Ordering::Release);
         EP0_SETUP.store(true, Ordering::Release);
         EP_IN_COMPLETE[0].store(false, Ordering::Release);
         EP_OUT_READY[0].store(false, Ordering::Release);
         EP_OUT_WAKERS[0].wake();
         EP_IN_WAKERS[0].wake();
+        // SDRX invalidates completion flags from the interrupted control
+        // transfer, even if hardware reported them in the same IRQ snapshot.
+        return;
     }
-    if flags & EP_INT_ODRX != 0 {
+    if flags & (EP_INT_ODRX | EP_INT_ZLRX) != 0 {
         EP_OUT_READY[ep].store(true, Ordering::Release);
         EP_OUT_WAKERS[ep].wake();
     }
@@ -786,9 +918,14 @@ fn handle_endpoint_interrupt(ep: usize) {
         EP_IN_COMPLETE[ep].store(true, Ordering::Release);
         EP_IN_WAKERS[ep].wake();
     }
-
-    unsafe {
-        usb_regs().isr().write(|w| w.bits(IER_EP0IE << ep));
+    if flags & EP_INT_ODOV != 0 {
+        EP_BUFFER_OVERFLOW[ep].store(true, Ordering::Release);
+        EP_OUT_WAKERS[ep].wake();
+    }
+    if flags & (EP_INT_UER | EP_INT_SDER) != 0 {
+        EP_TRANSFER_ERROR[ep].store(true, Ordering::Release);
+        EP_IN_WAKERS[ep].wake();
+        EP_OUT_WAKERS[ep].wake();
     }
 }
 
@@ -796,6 +933,10 @@ fn handle_endpoint_interrupt(ep: usize) {
 pub struct InterruptHandler;
 
 impl InterruptHandler {
+    /// Run the USB interrupt service routine.
+    ///
+    /// # Safety
+    /// Must only be called from the USB interrupt context.
     pub unsafe fn on_interrupt() {
         unsafe { on_usb_interrupt() }
     }
@@ -808,24 +949,40 @@ impl InterruptHandler {
 pub unsafe fn on_usb_interrupt() {
     let usb = usb_regs();
     let pending = usb.isr().read().bits() & usb.ier().read().bits();
+    let endpoint_pending = (pending >> 8) & 0xff;
 
     if pending & ISR_URSTIF != 0 {
+        BUS_SUSPEND.store(false, Ordering::Release);
+        BUS_RESUME.store(false, Ordering::Release);
         BUS_RESET.store(true, Ordering::Release);
         unsafe { usb.isr().write(|w| w.bits(ISR_URSTIF)) };
+        // A reset invalidates all endpoint completions in this IRQ snapshot.
+        // Acknowledge them without publishing stale transfer results.
+        for ep in 0..EP_COUNT {
+            if endpoint_pending & (1 << ep) != 0 {
+                let raw_flags = read_ep_reg(ep, EP_ISR_OFFSET) & 0x0fff;
+                if raw_flags != 0 {
+                    write_ep_reg(ep, EP_ISR_OFFSET, raw_flags);
+                }
+                unsafe { usb.isr().write(|w| w.bits(IER_EP0IE << ep)) };
+            }
+        }
         BUS_WAKER.wake();
+        return;
     }
     if pending & ISR_SUSPIF != 0 {
+        BUS_RESUME.store(false, Ordering::Release);
         BUS_SUSPEND.store(true, Ordering::Release);
         unsafe { usb.isr().write(|w| w.bits(ISR_SUSPIF)) };
         BUS_WAKER.wake();
     }
     if pending & ISR_RSMIF != 0 {
+        BUS_SUSPEND.store(false, Ordering::Release);
         BUS_RESUME.store(true, Ordering::Release);
         unsafe { usb.isr().write(|w| w.bits(ISR_RSMIF)) };
         BUS_WAKER.wake();
     }
 
-    let endpoint_pending = (pending >> 8) & 0xff;
     for ep in 0..EP_COUNT {
         if endpoint_pending & (1 << ep) != 0 {
             handle_endpoint_interrupt(ep);

@@ -56,15 +56,14 @@ async fn usb_serial_communication_task(mut p: embassy_ht32f523xx::Peripherals) {
     Timer::after(HalDuration::from_millis(100)).await;
     info!("test passed USB_SERIAL_TIMER_PRE_OK - InterruptExecutor timer works!");
 
-    // Configure USB pins PC6 (DM) and PC7 (DP) as AF10
-    // CRITICAL: Based on hardware layout - PA11/PA12 are wrong for this board!
-    let dm_pin: UsbDm<'C', 6> = p.gpioc.pc6().into_alternate_function::<10>();
-    let dp_pin: UsbDp<'C', 7> = p.gpioc.pc7().into_alternate_function::<10>();
+    // PC6/PC7 use the dedicated USB AF0 electrical configuration.
+    let dm_pin: UsbDm<'C', 6> = p.gpioc.pc6().into_usb_dm();
+    let dp_pin: UsbDp<'C', 7> = p.gpioc.pc7().into_usb_dp();
     let usb_pins = UsbPins::new(dm_pin, dp_pin);
 
     let usb_config = UsbConfig::default();
     let driver = init_usb_with_pins(p.usb, usb_pins, usb_config);
-    info!("✅ USB driver created with USB pins configured as AF10 - PC6(PC), PC7(PC)");
+    info!("✅ USB driver created with USB AF0 pins PC6/PC7");
 
     // Create embassy-usb config for CDC-ACM serial device
     let mut config = embassy_usb::Config::new(0x16c0, 0x05dc); // Generic test VID/PID

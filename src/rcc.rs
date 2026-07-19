@@ -7,25 +7,10 @@ use crate::time::Hertz;
 
 // Use defmt logging when available
 #[cfg(feature = "defmt")]
-use defmt::{debug, error, info, warn};
+use defmt::info;
 
 #[cfg(not(feature = "defmt"))]
 macro_rules! info {
-    ($($arg:tt)*) => {};
-}
-
-#[cfg(not(feature = "defmt"))]
-macro_rules! debug {
-    ($($arg:tt)*) => {};
-}
-
-#[cfg(not(feature = "defmt"))]
-macro_rules! warn {
-    ($($arg:tt)*) => {};
-}
-
-#[cfg(not(feature = "defmt"))]
-macro_rules! error {
     ($($arg:tt)*) => {};
 }
 
@@ -46,11 +31,17 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            sys_clk: Some(Hertz::mhz(48)), // Default to 96MHz for USB compatibility (96MHz/2 = 48MHz USB)
-            ahb_clk: None,                 // Same as sys_clk by default
-            apb_clk: None,                 // Same as sys_clk by default
-            use_hse: false,                // Use HSI by default
-            hse_freq: None,
+            sys_clk: Some(Hertz::mhz(48)),
+            ahb_clk: None,
+            apb_clk: None,
+            // USB full-speed cannot use the ±2% HSI as its 48 MHz source.
+            // The supported HT32F52352 board carries an 8 MHz crystal.
+            use_hse: cfg!(feature = "usb"),
+            hse_freq: if cfg!(feature = "usb") {
+                Some(Hertz::mhz(8))
+            } else {
+                None
+            },
         }
     }
 }
@@ -93,10 +84,26 @@ pub fn init(config: Config) -> Clocks {
     // Configure system clock based on config
     let sys_freq = config.sys_clk.unwrap_or(Hertz::mhz(8)); // Default HSI freq
 
+    #[cfg(feature = "usb")]
+    {
+        assert!(config.use_hse, "USB requires the external HSE oscillator");
+        assert_eq!(
+            sys_freq.to_hz(),
+            48_000_000,
+            "USB requires a 48 MHz PLL system clock"
+        );
+    }
+
     let clocks = if config.use_hse && config.hse_freq.is_some() {
-        configure_hse_clock(ckcu, config.hse_freq.unwrap(), sys_freq)
+        configure_hse_clock(
+            ckcu,
+            config.hse_freq.unwrap(),
+            sys_freq,
+            config.ahb_clk,
+            config.apb_clk,
+        )
     } else {
-        configure_hsi_clock(ckcu, sys_freq)
+        configure_hsi_clock(ckcu, sys_freq, config.ahb_clk, config.apb_clk)
     };
 
     // Store clocks globally for later access
@@ -108,6 +115,7 @@ pub fn init(config: Config) -> Clocks {
     enable_gpio_clocks(ckcu);
 
     // Configure USB clock divider if needed
+    #[cfg(feature = "usb")]
     configure_usb_clock(ckcu, clocks.sys_clk);
 
     clocks
@@ -128,47 +136,71 @@ pub fn get_clocks() -> Clocks {
     }
 }
 
-fn configure_hsi_clock(ckcu: &crate::pac::ckcu::RegisterBlock, target_freq: Hertz) -> Clocks {
+fn configure_hsi_clock(
+    ckcu: &crate::pac::ckcu::RegisterBlock,
+    target_freq: Hertz,
+    ahb_clk: Option<Hertz>,
+    apb_clk: Option<Hertz>,
+) -> Clocks {
     // Enable HSI (High Speed Internal oscillator) first
     ckcu.gccr().modify(|_, w| w.hsien().set_bit());
 
     // Wait for HSI to be ready
-    while !ckcu.gcsr().read().hsirdy().bit_is_set() {}
+    wait_until(
+        || ckcu.gcsr().read().hsirdy().bit_is_set(),
+        "HSI oscillator did not become ready",
+    );
 
     // Configure PLL if target frequency is higher than HSI
     let sys_clk = if target_freq.to_hz() > 8_000_000 {
         configure_pll_from_hsi(ckcu, target_freq)
     } else {
-        // Use HSI directly - SW field: 0=HSI, 1=HSE, 2=PLL
-        ckcu.gccr().modify(|_, w| w.sw().variant(0));
+        assert_eq!(target_freq.to_hz(), 8_000_000, "direct HSI clock is 8 MHz");
+        configure_flash_wait_states(8_000_000);
+        // GCCR.SW: PLL=1, HSE=2, HSI=3.
+        ckcu.gccr().modify(|_, w| w.sw().variant(3));
+        wait_until(
+            || ckcu.gccr().read().sw().bits() == 3,
+            "failed to switch system clock to HSI",
+        );
         Hertz::mhz(8) // HSI frequency
     };
 
-    // Configure AHB and APB prescalers
-    configure_bus_clocks(ckcu, sys_clk)
+    configure_bus_clocks(ckcu, sys_clk, ahb_clk, apb_clk, None)
 }
 
 fn configure_hse_clock(
     ckcu: &crate::pac::ckcu::RegisterBlock,
     hse_freq: Hertz,
     target_freq: Hertz,
+    ahb_clk: Option<Hertz>,
+    apb_clk: Option<Hertz>,
 ) -> Clocks {
     // Enable HSE (High Speed External oscillator)
     ckcu.gccr().modify(|_, w| w.hseen().set_bit());
 
     // Wait for HSE to be ready
-    while !ckcu.gcsr().read().hserdy().bit_is_set() {}
+    wait_until(
+        || ckcu.gcsr().read().hserdy().bit_is_set(),
+        "HSE oscillator did not become ready",
+    );
 
     // Configure PLL from HSE if needed
     let sys_clk = if target_freq.to_hz() > hse_freq.to_hz() {
         configure_pll_from_hse(ckcu, hse_freq, target_freq)
     } else {
         // Use HSE directly
-        ckcu.gccr().modify(|_, w| w.sw().variant(1));
+        assert_eq!(target_freq.to_hz(), hse_freq.to_hz());
+        configure_flash_wait_states(hse_freq.to_hz());
+        ckcu.gccr().modify(|_, w| w.sw().variant(2));
+        wait_until(
+            || ckcu.gccr().read().sw().bits() == 2,
+            "failed to switch system clock to HSE",
+        );
         hse_freq
     };
 
-    configure_bus_clocks(ckcu, sys_clk)
+    configure_bus_clocks(ckcu, sys_clk, ahb_clk, apb_clk, Some(hse_freq))
 }
 
 fn configure_pll_from_hsi(ckcu: &crate::pac::ckcu::RegisterBlock, target_freq: Hertz) -> Hertz {
@@ -197,14 +229,21 @@ fn configure_pll_from_hsi(ckcu: &crate::pac::ckcu::RegisterBlock, target_freq: H
     ckcu.gccr().modify(|_, w| w.pllen().set_bit());
 
     // Wait for PLL to be ready
-    while !ckcu.gcsr().read().pllrdy().bit_is_set() {}
+    wait_until(
+        || ckcu.gcsr().read().pllrdy().bit_is_set(),
+        "PLL did not lock",
+    );
 
     let multiplier = if pfbd == 0 { 16 } else { pfbd as u32 };
     let actual_freq = hsi_freq * multiplier / (1u32 << potd as u32);
     configure_flash_wait_states(actual_freq);
 
     // Switch to PLL as system clock
-    ckcu.gccr().modify(|_, w| w.sw().variant(2));
+    ckcu.gccr().modify(|_, w| w.sw().variant(1));
+    wait_until(
+        || ckcu.gccr().read().sw().bits() == 1,
+        "failed to switch system clock to PLL",
+    );
 
     Hertz::hz(actual_freq)
 }
@@ -235,14 +274,21 @@ fn configure_pll_from_hse(
     ckcu.gccr().modify(|_, w| w.pllen().set_bit());
 
     // Wait for PLL to be ready
-    while !ckcu.gcsr().read().pllrdy().bit_is_set() {}
+    wait_until(
+        || ckcu.gcsr().read().pllrdy().bit_is_set(),
+        "PLL did not lock",
+    );
 
     let multiplier = if pfbd == 0 { 16 } else { pfbd as u32 };
     let actual_freq = hse_hz * multiplier / (1u32 << potd as u32);
     configure_flash_wait_states(actual_freq);
 
     // Switch to PLL as system clock
-    ckcu.gccr().modify(|_, w| w.sw().variant(2));
+    ckcu.gccr().modify(|_, w| w.sw().variant(1));
+    wait_until(
+        || ckcu.gccr().read().sw().bits() == 1,
+        "failed to switch system clock to PLL",
+    );
 
     Hertz::hz(actual_freq)
 }
@@ -271,15 +317,11 @@ fn calculate_pll_params_ht32(input_freq: u32, target_freq: u32) -> (u8, u8) {
 
             // HT32F523xx VCO runs at twice the pre-POTD PLL output.
             let vco_freq = input_freq * multiplier * 2;
-            if vco_freq < 48_000_000 || vco_freq > 96_000_000 {
+            if !(48_000_000..=96_000_000).contains(&vco_freq) {
                 continue;
             }
 
-            let error = if output_freq > target_freq {
-                output_freq - target_freq
-            } else {
-                target_freq - output_freq
-            };
+            let error = output_freq.abs_diff(target_freq);
 
             if error < best_error {
                 best_error = error;
@@ -296,22 +338,53 @@ fn calculate_pll_params_ht32(input_freq: u32, target_freq: u32) -> (u8, u8) {
     (best_pfbd, best_potd)
 }
 
-fn configure_bus_clocks(_ckcu: &crate::pac::ckcu::RegisterBlock, sys_clk: Hertz) -> Clocks {
-    // For HT32, AHB and APB are typically the same as system clock
-    // This can be modified based on specific requirements
+fn configure_bus_clocks(
+    ckcu: &crate::pac::ckcu::RegisterBlock,
+    sys_clk: Hertz,
+    requested_ahb: Option<Hertz>,
+    requested_apb: Option<Hertz>,
+    hse_clk: Option<Hertz>,
+) -> Clocks {
+    let requested_ahb = requested_ahb.unwrap_or(sys_clk).to_hz();
+    let sys_hz = sys_clk.to_hz();
+    assert!(requested_ahb != 0 && sys_hz.is_multiple_of(requested_ahb));
+    let divisor = sys_hz / requested_ahb;
+    let prescaler = match divisor {
+        1 => 0,
+        2 => 1,
+        4 => 2,
+        8 => 3,
+        _ => panic!("AHB clock only supports system clock divisors 1, 2, 4, or 8"),
+    };
+    ckcu.ahbcfgr()
+        .modify(|_, w| unsafe { w.ahbpre().bits(prescaler) });
 
-    // Configure AHB prescaler (if needed)
-    // ckcu.ahbcfgr.modify(|_, w| w.ahbpre().div1());
-
-    // Configure APB prescaler (if needed)
-    // ckcu.apbcfgr.modify(|_, w| w.apbpre().div1());
+    // HT32F523xx has no independent APB prescaler: CK_APB follows CK_AHB.
+    let ahb_clk = Hertz::hz(sys_hz / divisor);
+    let apb_clk = requested_apb.unwrap_or(ahb_clk);
+    assert_eq!(
+        apb_clk.to_hz(),
+        ahb_clk.to_hz(),
+        "APB clock must equal AHB clock on HT32F523xx"
+    );
 
     Clocks {
         sys_clk,
-        ahb_clk: sys_clk, // Same as system clock
-        apb_clk: sys_clk, // Same as system clock
-        hse_clk: None,    // TODO: Track HSE frequency if used
+        ahb_clk,
+        apb_clk,
+        hse_clk,
     }
+}
+
+fn wait_until(mut ready: impl FnMut() -> bool, failure: &'static str) {
+    const CLOCK_STARTUP_TIMEOUT: u32 = 10_000_000;
+    for _ in 0..CLOCK_STARTUP_TIMEOUT {
+        if ready() {
+            return;
+        }
+        core::hint::spin_loop();
+    }
+    panic!("{failure}");
 }
 
 fn configure_flash_wait_states(frequency: u32) {
@@ -329,7 +402,10 @@ fn enable_usb_backup_domain(ckcu: &crate::pac::ckcu::RegisterBlock) {
     ckcu.apbccr1().modify(|_, w| w.bkpren().set_bit());
 
     let pwrcu = unsafe { &*Pwrcu::ptr() };
-    while pwrcu.pwrcu_baktest().read().baktest().bits() != 0x27 {}
+    wait_until(
+        || pwrcu.pwrcu_baktest().read().baktest().bits() == 0x27,
+        "USB backup power domain did not become ready",
+    );
 }
 
 fn enable_gpio_clocks(ckcu: &crate::pac::ckcu::RegisterBlock) {
@@ -343,9 +419,10 @@ fn enable_gpio_clocks(ckcu: &crate::pac::ckcu::RegisterBlock) {
             .set_bit() // Enable GPIOC
             .pden()
             .set_bit() // Enable GPIOD
-            .usben()
-            .set_bit() // Enable USB peripheral clock
     });
+
+    #[cfg(feature = "usb")]
+    ckcu.ahbccr().modify(|_, w| w.usben().set_bit());
 
     // Enable AFIO clock (AFIO is on APB bus)
     ckcu.apbccr0().modify(|_, w| {
@@ -366,45 +443,26 @@ fn enable_gpio_clocks(ckcu: &crate::pac::ckcu::RegisterBlock) {
 /// CRITICAL: USB requires EXACTLY 48MHz (±0.25%) for proper operation
 /// HT32 uses PLL output divided by USB prescaler: USB_CLK = PLL_CLK / USB_PRESCALER
 ///
-/// Recommended configuration based on HT32 documentation:
-/// - PLL: 144MHz (8MHz HSE * 18 or equivalent from HSI)
-/// - USB_PRESCALER: 3 (144MHz / 3 = 48MHz)
+/// Supported board configuration: 8 MHz HSE, 48 MHz PLL, USBPRE=0.
 fn configure_usb_clock(ckcu: &crate::pac::ckcu::RegisterBlock, sys_clk: Hertz) {
     // USB requires EXACTLY 48MHz clock (±0.25% tolerance)
     const USB_TARGET_FREQ: u32 = 48_000_000;
 
-    let sys_freq = sys_clk.to_hz();
+    assert_eq!(sys_clk.to_hz(), USB_TARGET_FREQ);
+    assert!(
+        ckcu.gcsr().read().pllrdy().bit_is_set(),
+        "USB clock source PLL is not locked"
+    );
+    assert_eq!(
+        ckcu.gccr().read().sw().bits(),
+        1,
+        "USB requires PLL as the active system clock"
+    );
 
-    // HT32F523xx supports CK_PLL directly (USBPRE=0) or divided by two
-    // (USBPRE=1). The MCU system clock is limited to 48MHz, so the normal
-    // USB-capable configuration is a 48MHz PLL with no division.
-    let (usbpre_val, actual_usb_freq) = if sys_freq == USB_TARGET_FREQ {
-        (0, sys_freq)
-    } else {
-        (0, sys_freq)
-    };
-
-    ckcu.gcfgr()
-        .modify(|_, w| unsafe { w.usbpre().bits(usbpre_val) });
-
-    // Log USB clock configuration for debugging
-    if actual_usb_freq == USB_TARGET_FREQ {
-        info!(
-            "🔧 USB_CLOCK: Configured exact 48MHz USB clock (sys: {}MHz, prescaler: {})",
-            sys_freq / 1_000_000,
-            usbpre_val + 1
-        );
-    } else {
-        error!(
-            "❌ USB_CLOCK_ERROR: USB clock = {}MHz (target: 48MHz) - enumeration may fail!",
-            actual_usb_freq / 1_000_000
-        );
-        error!(
-            "❌ USB_CLOCK_ERROR: System clock {}MHz with prescaler {} cannot produce 48MHz USB",
-            sys_freq / 1_000_000,
-            usbpre_val
-        );
-    }
+    // USBPRE=0 selects CK_PLL without division: 48 MHz / 1 = 48 MHz.
+    ckcu.gcfgr().modify(|_, w| unsafe { w.usbpre().bits(0) });
+    assert_eq!(ckcu.gcfgr().read().usbpre().bits(), 0);
+    info!("USB clock configured from 48 MHz PLL");
 }
 
 /// RCC peripheral handle

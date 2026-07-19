@@ -45,7 +45,7 @@ usb = ["rt"]
 defmt = ["dep:defmt", "dep:defmt-rtt"]
 
 [dependencies]
-cortex-m = "0.7"
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = { version = "0.7", optional = true }
 embedded-hal-02 = { package = "embedded-hal", version = "0.2.6", features = ["unproven"] }
 embedded-hal = "1.0"
@@ -73,7 +73,7 @@ defmt-rtt = { version = "0.4", optional = true }
 
 [workspace.dependencies]
 embassy-ht32f523xx = { path = ".", default-features = false }
-cortex-m = "0.7"
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"
 embedded-hal-02 = { package = "embedded-hal", version = "0.2.6", features = ["unproven"] }
 embedded-hal = "1.0"

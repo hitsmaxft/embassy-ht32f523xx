@@ -14,47 +14,6 @@ pub use crate::pac::Interrupt;
 pub use crate::pac::interrupt;
 
 
-/// Critical section implementation for Embassy and defmt
-///
-/// This provides the necessary symbols for critical section functionality
-/// with the HT32F523xx microcontroller.
-///
-/// Uses a nesting counter approach since critical-section crate uses () as restore state.
-static mut CRITICAL_SECTION_NESTING: u32 = 0;
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn _critical_section_1_0_acquire() -> () {
-    // Use nesting counter for critical section management
-    let nesting = unsafe { CRITICAL_SECTION_NESTING };
-
-    if nesting == 0 {
-        // First entry: disable interrupts
-        unsafe {
-            core::arch::asm!("cpsid i", options(nomem, nostack, preserves_flags));
-        }
-    }
-
-    unsafe { CRITICAL_SECTION_NESTING = nesting + 1 };
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn _critical_section_1_0_release(_token: ()) {
-    // Decrement nesting counter
-    let nesting = unsafe { CRITICAL_SECTION_NESTING };
-
-    if nesting > 0 {
-        let new_nesting = nesting - 1;
-        unsafe { CRITICAL_SECTION_NESTING = new_nesting };
-
-        // Last exit: restore interrupts
-        if new_nesting == 0 {
-            unsafe {
-                core::arch::asm!("cpsie i", options(nomem, nostack, preserves_flags));
-            }
-        }
-    }
-}
-
 /// Default interrupt handler placeholder
 #[unsafe(no_mangle)]
 pub extern "C" fn DefaultHandler() -> ! {

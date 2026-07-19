@@ -44,10 +44,9 @@ fn main() -> ! {
 async fn usb_buffer_io_test(mut p: embassy_ht32f523xx::Peripherals) {
     info!("🎯 USB_BUFFER_IO_TEST: Start");
 
-    // Configure USB pins PC6 (DM) and PC7 (DP) as AF10
-    // CRITICAL: Based on hardware layout - PA11/PA12 are wrong for this board!
-    let dm_pin: UsbDm<'C', 6> = p.gpioc.pc6().into_alternate_function::<0>();
-    let dp_pin: UsbDp<'C', 7> = p.gpioc.pc7().into_alternate_function::<0>();
+    // Configure PC6/PC7 with the dedicated USB AF0 electrical settings.
+    let dm_pin: UsbDm<'C', 6> = p.gpioc.pc6().into_usb_dm();
+    let dp_pin: UsbDp<'C', 7> = p.gpioc.pc7().into_usb_dp();
     let usb_pins = UsbPins::new(dm_pin, dp_pin);
 
     let driver = init_usb_with_pins(p.usb, usb_pins, UsbConfig::default());
