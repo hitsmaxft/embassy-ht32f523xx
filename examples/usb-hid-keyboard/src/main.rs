@@ -2,18 +2,18 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
+use embassy_ht32f523xx::gpio::{Pin, Pull, mode};
+use embassy_ht32f523xx::usb::{Config as UsbConfig, Driver};
 use embassy_time::{Duration, Timer};
-use embassy_usb::class::hid::{HidWriter, State, Config};
-use embassy_usb::driver::EndpointError;
 use embassy_usb::Builder;
+use embassy_usb::class::hid::{Config, HidWriter, State};
+use embassy_usb::driver::EndpointError;
 use embedded_hal::digital::InputPin;
-use embassy_ht32f523xx::gpio::{Pin, mode};
-use embassy_ht32f523xx::usb::{Driver, Config as UsbConfig};
+use panic_probe as _;
 use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
-use defmt_rtt as _;
-use panic_probe as _;
 
 use ht32_bsp::Board;
 #[embassy_executor::main]
@@ -26,7 +26,9 @@ async fn main(_spawner: Spawner) {
 
     // Initialize board
     let board = Board::new();
-    let button = board.user_button;
+    // ESK32-30501 has only the reset button on-board. Use an external,
+    // active-low button between CN4 pin 27 (PB12/WAKEUP) and GND.
+    let button = board.wake_up.into_input_with_pull(Pull::Up);
 
     info!("Board initialized, setting up USB HID");
 
@@ -88,13 +90,16 @@ async fn main(_spawner: Spawner) {
     embassy_futures::join::join(usb_future, hid_future).await;
 }
 
-async fn hid_keyboard_task<'a>(mut hid: HidWriter<'a, Driver<'a>, 8>, mut button: Pin<'B', 12, mode::Input>) {
+async fn hid_keyboard_task<'a>(
+    mut hid: HidWriter<'a, Driver<'a>, 8>,
+    mut button: Pin<'B', 12, mode::Input>,
+) {
     info!("Starting HID keyboard task");
 
     let mut last_button_state = false;
     let mut button_count = 0u32;
 
-    info!("Press the user button (PB12) to send HID keyboard reports");
+    info!("Press the external CN4-27 PB12 button to send HID keyboard reports");
     info!("Each button press will send 'Hello' via USB HID");
 
     loop {
@@ -110,7 +115,10 @@ async fn hid_keyboard_task<'a>(mut hid: HidWriter<'a, Driver<'a>, 8>, mut button
         // Detect button press
         if button_pressed && !last_button_state {
             button_count += 1;
-            info!("Button pressed! Count: {} - Sending HID report", button_count);
+            info!(
+                "Button pressed! Count: {} - Sending HID report",
+                button_count
+            );
 
             // Send "Hello" via HID keyboard
             if let Err(_e) = send_hello_via_hid(&mut hid).await {
@@ -128,7 +136,9 @@ async fn hid_keyboard_task<'a>(mut hid: HidWriter<'a, Driver<'a>, 8>, mut button
 }
 
 /// Send "Hello" string via HID keyboard reports
-async fn send_hello_via_hid<'a>(hid: &mut HidWriter<'a, Driver<'a>, 8>) -> Result<(), EndpointError> {
+async fn send_hello_via_hid<'a>(
+    hid: &mut HidWriter<'a, Driver<'a>, 8>,
+) -> Result<(), EndpointError> {
     let hello_chars = [
         0x0B, // H
         0x08, // E

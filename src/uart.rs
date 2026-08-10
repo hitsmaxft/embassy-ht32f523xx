@@ -2,10 +2,11 @@
 
 use core::marker::PhantomData;
 use embassy_sync::waitqueue::AtomicWaker;
-use embedded_hal_nb::serial::{ErrorKind};
+use embedded_hal_nb::serial::ErrorKind;
 use embedded_hal_nb::serial::{ErrorType, Read, Write};
 use nb;
 
+use crate::gpio::{Pin, mode};
 use crate::pac::{Usart0 as Usart0Pac, Usart1 as Usart1Pac};
 use crate::time::Hertz;
 
@@ -41,6 +42,15 @@ pub trait UartTx<T> {}
 
 /// UART RX pin trait
 pub trait UartRx<T> {}
+
+// ESK32-30501 exposes USART0's module connector on PA2/PA3. Table 3 of
+// the HT32F52342/52 datasheet assigns both signals to AF6.
+impl UartTx<Usart0> for Pin<'A', 2, mode::AlternateFunction<6>> {}
+impl UartRx<Usart0> for Pin<'A', 3, mode::AlternateFunction<6>> {}
+
+// The target-board RS-232/DAP path is USART1 on PA4/PA5, also AF6.
+impl UartTx<Usart1> for Pin<'A', 4, mode::AlternateFunction<6>> {}
+impl UartRx<Usart1> for Pin<'A', 5, mode::AlternateFunction<6>> {}
 
 /// UART configuration
 #[derive(Debug, Clone)]
@@ -180,22 +190,15 @@ pub struct Uart<T: Instance> {
 
 impl<T: Instance> Uart<T> {
     /// Create a new UART instance
-    pub fn new(
-        _uart: T,
-        _tx_pin: impl UartTx<T>,
-        _rx_pin: impl UartRx<T>,
-        config: Config,
-    ) -> Self {
+    pub fn new(_uart: T, _tx_pin: impl UartTx<T>, _rx_pin: impl UartRx<T>, config: Config) -> Self {
         // Enable clock
         T::enable_clock();
 
         let regs = T::regs();
 
         // Disable UART while configuring
-        regs.usart_usrcr().modify(|_, w| {
-            w.urtxen().clear_bit()
-             .urrxen().clear_bit()
-        });
+        regs.usart_usrcr()
+            .modify(|_, w| w.urtxen().clear_bit().urrxen().clear_bit());
 
         // Configure baud rate
         let clock_freq = crate::rcc::get_clocks().apb_clk().to_hz();
@@ -228,30 +231,41 @@ impl<T: Instance> Uart<T> {
             };
 
             unsafe {
-                w.wls().bits(wls)
-                 .nsb().bit(nsb)
-                 .pbe().bit(pbe)
-                 .epe().bit(epe)
+                w.wls()
+                    .bits(wls)
+                    .nsb()
+                    .bit(nsb)
+                    .pbe()
+                    .bit(pbe)
+                    .epe()
+                    .bit(epe)
             }
         });
 
         // Configure FIFOs
         regs.usart_usrfcr().modify(|_, w| unsafe {
-            w.rxtl().bits(0b01)      // RX trigger level
-             .txtl().bits(0b00)      // TX trigger level
+            w.rxtl()
+                .bits(0b01) // RX trigger level
+                .txtl()
+                .bits(0b00) // TX trigger level
         });
 
         // Configure interrupts
         regs.usart_usrier().modify(|_, w| {
-            w.rxdrie().set_bit()     // RX data ready interrupt
-             .txdeie().set_bit()     // TX data empty interrupt
-             .oeie().set_bit()       // Overrun error interrupt
+            w.rxdrie()
+                .set_bit() // RX data ready interrupt
+                .txdeie()
+                .set_bit() // TX data empty interrupt
+                .oeie()
+                .set_bit() // Overrun error interrupt
         });
 
         // Enable UART
         regs.usart_usrcr().modify(|_, w| {
-            w.urtxen().set_bit()     // TX enable
-             .urrxen().set_bit()     // RX enable
+            w.urtxen()
+                .set_bit() // TX enable
+                .urrxen()
+                .set_bit() // RX enable
         });
 
         Self {
@@ -328,7 +342,8 @@ impl<T: Instance> Uart<T> {
                 Err(nb::Error::WouldBlock) => core::task::Poll::Pending,
                 Err(nb::Error::Other(e)) => core::task::Poll::Ready(Err(e)),
             }
-        }).await
+        })
+        .await
     }
 
     async fn read_byte_async(&mut self) -> Result<u8, Error> {
@@ -342,7 +357,8 @@ impl<T: Instance> Uart<T> {
                 Err(nb::Error::WouldBlock) => core::task::Poll::Pending,
                 Err(nb::Error::Other(e)) => core::task::Poll::Ready(Err(e)),
             }
-        }).await
+        })
+        .await
     }
 
     /// Flush the TX buffer
@@ -358,7 +374,8 @@ impl<T: Instance> Uart<T> {
             } else {
                 core::task::Poll::Pending
             }
-        }).await
+        })
+        .await
     }
 }
 

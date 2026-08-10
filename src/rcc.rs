@@ -2,7 +2,9 @@
 //!
 //! HT32 uses CKCU (Clock Control Unit) instead of RCC, but we maintain RCC naming for consistency
 
-use crate::pac::{Ckcu, Fmc, Pwrcu};
+#[cfg(feature = "usb")]
+use crate::pac::Pwrcu;
+use crate::pac::{Ckcu, Fmc};
 use crate::time::Hertz;
 
 // Use defmt logging when available
@@ -160,7 +162,7 @@ fn configure_hsi_clock(
         // GCCR.SW: PLL=1, HSE=2, HSI=3.
         ckcu.gccr().modify(|_, w| w.sw().variant(3));
         wait_until(
-            || ckcu.gccr().read().sw().bits() == 3,
+            || system_clock_is(ckcu, 3),
             "failed to switch system clock to HSI",
         );
         Hertz::mhz(8) // HSI frequency
@@ -194,7 +196,7 @@ fn configure_hse_clock(
         configure_flash_wait_states(hse_freq.to_hz());
         ckcu.gccr().modify(|_, w| w.sw().variant(2));
         wait_until(
-            || ckcu.gccr().read().sw().bits() == 2,
+            || system_clock_is(ckcu, 2),
             "failed to switch system clock to HSE",
         );
         hse_freq
@@ -241,7 +243,7 @@ fn configure_pll_from_hsi(ckcu: &crate::pac::ckcu::RegisterBlock, target_freq: H
     // Switch to PLL as system clock
     ckcu.gccr().modify(|_, w| w.sw().variant(1));
     wait_until(
-        || ckcu.gccr().read().sw().bits() == 1,
+        || system_clock_is(ckcu, 1),
         "failed to switch system clock to PLL",
     );
 
@@ -286,7 +288,7 @@ fn configure_pll_from_hse(
     // Switch to PLL as system clock
     ckcu.gccr().modify(|_, w| w.sw().variant(1));
     wait_until(
-        || ckcu.gccr().read().sw().bits() == 1,
+        || system_clock_is(ckcu, 1),
         "failed to switch system clock to PLL",
     );
 
@@ -354,7 +356,9 @@ fn configure_bus_clocks(
         2 => 1,
         4 => 2,
         8 => 3,
-        _ => panic!("AHB clock only supports system clock divisors 1, 2, 4, or 8"),
+        16 => 4,
+        32 => 5,
+        _ => panic!("AHB clock only supports system clock divisors 1, 2, 4, 8, 16, or 32"),
     };
     ckcu.ahbcfgr()
         .modify(|_, w| unsafe { w.ahbpre().bits(prescaler) });
@@ -387,11 +391,34 @@ fn wait_until(mut ready: impl FnMut() -> bool, failure: &'static str) {
     panic!("{failure}");
 }
 
+/// GCCR.SW is only a clock-source request. CKST.CKSWST reports the source
+/// actually driving CK_SYS after the hardware switching delay.
+fn system_clock_is(ckcu: &crate::pac::ckcu::RegisterBlock, source: u8) -> bool {
+    let status = ckcu.ckst().read().ckswst().bits();
+    if source == 1 {
+        // Both 000 and 001 select/report CK_PLL (documented as 00x).
+        status & 0b110 == 0
+    } else {
+        status == source
+    }
+}
+
 fn configure_flash_wait_states(frequency: u32) {
     let fmc = unsafe { &*Fmc::ptr() };
-    let wait_states = if frequency > 24_000_000 { 1 } else { 0 };
+    // CFCR.WAIT is encoded as wait cycles + 1: 001 means zero wait states,
+    // 010 means one. All other encodings are reserved on HT32F52342/52.
+    let wait_encoding = if frequency > 24_000_000 { 2 } else { 1 };
+    let prefetch_enabled = fmc.cfcr().read().pfbe().bit_is_set();
+
+    // The user manual requires prefetch to be disabled while WAIT changes.
+    if prefetch_enabled {
+        fmc.cfcr().modify(|_, w| w.pfbe().clear_bit());
+    }
     fmc.cfcr()
-        .modify(|_, w| unsafe { w.wait().bits(wait_states) });
+        .modify(|_, w| unsafe { w.wait().bits(wait_encoding) });
+    if prefetch_enabled {
+        fmc.cfcr().modify(|_, w| w.pfbe().set_bit());
+    }
 }
 
 #[cfg(feature = "usb")]
@@ -454,8 +481,8 @@ fn configure_usb_clock(ckcu: &crate::pac::ckcu::RegisterBlock, sys_clk: Hertz) {
         "USB clock source PLL is not locked"
     );
     assert_eq!(
-        ckcu.gccr().read().sw().bits(),
-        1,
+        ckcu.ckst().read().ckswst().bits() & 0b110,
+        0,
         "USB requires PLL as the active system clock"
     );
 

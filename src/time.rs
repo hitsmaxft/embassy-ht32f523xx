@@ -15,12 +15,15 @@
 use core::ops::{Div, Mul};
 
 // Include sub-modules
-pub mod clocks;
 pub mod bftm;
+pub mod clocks;
 
 // Export key components for time_driver_enhanced.rs
-pub use clocks::{clock_system_init, get_system_clock_frequency, ClockConfig, ClockError};
-pub use bftm::{bftm_system_init, BftmConfig, BftmError, calc_64bit_timestamp, BFTM_Timer, TimerStats, BFTM0_IRQ, BFTM1_IRQ, get_bftm0, get_bftm1};
+pub use bftm::{
+    BFTM_Timer, BFTM0_IRQ, BFTM1_IRQ, BftmConfig, BftmError, TimerStats, bftm_system_init,
+    calc_64bit_timestamp, get_bftm0, get_bftm1,
+};
+pub use clocks::{ClockConfig, ClockError, clock_system_init, get_system_clock_frequency};
 
 // ============================================================================
 // Basic Time Units (Backward Compatibility)
@@ -214,7 +217,7 @@ pub fn validate_time_system() -> Result<(), ClockError> {
         return Err(ClockError::ClockSourceNotReady);
     }
 
-    if clock_freq < 1_000_000 || clock_freq > 100_000_000 {
+    if clock_freq < 1_000_000 || clock_freq > 48_000_000 {
         return Err(ClockError::FrequencyOutOfRange);
     }
 
@@ -239,7 +242,11 @@ pub fn get_time_system_metrics() -> TimeSystemMetrics {
         clock_frequency_hz: clock_freq,
         clock_failures: clock_failures,
         timer_interrupts: bftm_stats.total_interrupts,
-        system_health: if clock_failures == 0 { SystemHealth::Healthy } else { SystemHealth::Degraded },
+        system_health: if clock_failures == 0 {
+            SystemHealth::Healthy
+        } else {
+            SystemHealth::Degraded
+        },
     }
 }
 
@@ -263,16 +270,7 @@ pub struct TimeSystemMetrics {
 /// Enterprise configuration for performance monitoring
 pub fn config_enterprise_performance() -> TimeSystemConfig {
     TimeSystemConfig {
-        clock_config: ClockConfig {
-            sysclock_hz: 48_000_000,
-            hse_enabled: false,  // Use HSI for stability
-            hse_freq: None,
-            pll_enabled: true,
-            pll_mult: 6,         // 48MHz system clock (8MHz * 6)
-            clock_monitor: true, // Enable hardware monitoring
-            ahb_divider: 0,
-            apb_divider: 0,
-        },
+        clock_config: clocks::config_enterprise_performance(),
         enable_monitoring: true,
         tick_frequency: 1_000_000, // 1MHz for 1μs precision
     }

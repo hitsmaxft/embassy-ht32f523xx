@@ -1,344 +1,198 @@
-//! Clock system management for HT32F523xx microcontrollers
+//! Compatibility clock-management facade for HT32F52342/52.
 //!
-//! This module provides enterprise-grade clock management with hardware fault monitoring,
-//! automatic failover, and precise frequency configuration following ChibiOS HAL LLD patterns.
-//!
-//! Based on comprehensive ChibiOS research findings for HT32F523xx microcontroller architecture.
+//! The actual clock tree is configured by [`crate::rcc`]. This module keeps
+//! the older time-system API, but validates it against the 48 MHz CKCU and
+//! reports the clock source from CKST rather than the GCCR request bits.
 
-use crate::pac::{Ckcu, ckcu};
+use core::sync::atomic::{AtomicU32, Ordering};
 
-/// Clock failure counter for enterprise monitoring
-static mut CLOCK_FAILURE_COUNT: u32 = 0;
+use crate::pac::Ckcu;
+use crate::time::Hertz;
 
-// ============================================================================
-// Clock System Configuration
-// ============================================================================
+const HSI_HZ: u32 = 8_000_000;
+const ESK32_HSE_HZ: u32 = 8_000_000;
+const MAX_SYSCLK_HZ: u32 = 48_000_000;
 
-/// Comprehensive clock configuration with ChibiOS-grade error handling
+static CLOCK_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Legacy clock configuration used by the enhanced time API.
 #[derive(Debug, Clone, Copy)]
 pub struct ClockConfig {
-    /// Target system clock frequency
     pub sysclock_hz: u32,
-    /// Enable external crystal (HSE) if available
     pub hse_enabled: bool,
-    /// HSE frequency in Hz (16MHz typical for HT32 boards)
+    /// HSE frequency. The ESK32-30501 crystal is 8 MHz; the MCU accepts 4..16 MHz.
     pub hse_freq: Option<u32>,
-    /// Enable PLL multiplication
     pub pll_enabled: bool,
-    /// PLL multiplier (2-16 range for HT32F523xx)
+    /// Direct PLL feedback multiplier for the legacy configurations in this API.
     pub pll_mult: u32,
-    /// Enable hardware clock monitoring and fault detection
+    /// Enable the HSE clock monitor. This is valid only when HSE is running.
     pub clock_monitor: bool,
-    /// HCLK/AHB divider (0=÷1, 1=÷2, 2=÷4, etc...)
+    /// AHBPRE encoding: 0=/1, 1=/2, 2=/4, 3=/8, 4=/16, 5=/32.
     pub ahb_divider: u8,
-    /// PCLK/APB divider (0=÷1, 1=÷2, 2=÷4, etc...)
+    /// Kept for API compatibility. HT32 has per-peripheral PCLK prescalers,
+    /// not one global APB divider, so this must be zero.
     pub apb_divider: u8,
 }
 
 impl Default for ClockConfig {
     fn default() -> Self {
         Self {
-            sysclock_hz: 48_000_000,  // 48MHz from HSI + PLL
-            hse_enabled: false,
-            hse_freq: None,
+            sysclock_hz: MAX_SYSCLK_HZ,
+            hse_enabled: cfg!(feature = "usb"),
+            hse_freq: cfg!(feature = "usb").then_some(ESK32_HSE_HZ),
             pll_enabled: true,
-            pll_mult: 6,              // 8MHz * 6 = 48MHz
-            clock_monitor: true,      // Enable fault detection
-            ahb_divider: 0,           // HCLK = SYSCLK
-            apb_divider: 0,           // PCLK = SYSCLK
+            pll_mult: 6,
+            clock_monitor: cfg!(feature = "usb"),
+            ahb_divider: 0,
+            apb_divider: 0,
         }
     }
 }
 
-/// High-performance clock configuration for enterprise applications
+/// Accurate high-performance configuration for ESK32-30501.
 pub fn config_enterprise_performance() -> ClockConfig {
     ClockConfig {
-        sysclock_hz: 48_000_000,
+        sysclock_hz: MAX_SYSCLK_HZ,
         hse_enabled: true,
-        hse_freq: Some(16_000_000),  // 16MHz crystal precision
+        hse_freq: Some(ESK32_HSE_HZ),
         pll_enabled: true,
-        pll_mult: 3,                 // 16MHz * 3 = 48MHz
-        clock_monitor: true,         // Full fault tolerance
-        ahb_divider: 0,
-        apb_divider: 0,
-    }
-}
-
-/// Low-power clock configuration for battery applications
-pub fn config_low_power() -> ClockConfig {
-    ClockConfig {
-        sysclock_hz: 8_000_000,      // HSI only (no PLL)
-        hse_enabled: false,
-        hse_freq: None,
-        pll_enabled: false,          // Disable PLL for power savings
-        pll_mult: 1,
+        pll_mult: 6,
         clock_monitor: true,
         ahb_divider: 0,
         apb_divider: 0,
     }
 }
 
-// ============================================================================
-// Clock System Implementation
-// ============================================================================
+pub fn config_low_power() -> ClockConfig {
+    ClockConfig {
+        sysclock_hz: HSI_HZ,
+        hse_enabled: false,
+        hse_freq: None,
+        pll_enabled: false,
+        pll_mult: 1,
+        clock_monitor: false,
+        ahb_divider: 0,
+        apb_divider: 0,
+    }
+}
 
-/// Get world-readable clock failure count for monitoring
 pub fn get_clock_failure_count() -> u32 {
-    unsafe { CLOCK_FAILURE_COUNT }
+    CLOCK_FAILURE_COUNT.load(Ordering::Relaxed)
 }
 
-/// Reset clock failure counter
 pub fn reset_clock_failure_count() {
-    unsafe { CLOCK_FAILURE_COUNT = 0; }
+    CLOCK_FAILURE_COUNT.store(0, Ordering::Relaxed);
 }
 
-/// Enterprise-grade clock system initialization
 pub fn clock_system_init(config: &ClockConfig) -> Result<(), ClockError> {
+    validate_config(config)?;
+
+    let ahb_divisor = 1u32 << config.ahb_divider;
+    let ahb_hz = config.sysclock_hz / ahb_divisor;
+    crate::rcc::init(crate::rcc::Config {
+        sys_clk: Some(Hertz::hz(config.sysclock_hz)),
+        ahb_clk: Some(Hertz::hz(ahb_hz)),
+        apb_clk: Some(Hertz::hz(ahb_hz)),
+        use_hse: config.hse_enabled,
+        hse_freq: config.hse_freq.map(Hertz::hz),
+    });
+
     let ckcu = unsafe { &*Ckcu::ptr() };
-
-    // Step 1: Security - Disable PLL during configuration
-    ckcu.gccr().modify(|_, w| w.pllen().clear_bit());
-
-    // Step 2: Start HSI oscillator as foundation
-    start_hsi_oscillator(ckcu)?;
-
-    // Step 3: Configure external crystal if requested
-    if config.hse_enabled {
-        if let Some(hse_freq) = config.hse_freq {
-            start_hse_oscillator(ckcu, hse_freq)?;
-        }
-    }
-
-    // Step 4: Configure PLL for target frequency
-    if config.pll_enabled && config.pll_mult >= 2 && config.pll_mult <= 16 {
-        configure_pll_multiplication(ckcu, config)?;
-    }
-
-    // Step 5: Configure bus clock dividers
-    configure_bus_clocks(ckcu, config)?;
-
-    // Step 6: Enable hardware clock monitoring (enterprise feature)
-    if config.clock_monitor {
-        enable_clock_monitoring(ckcu)?;
-    }
-
-    // Step 7: Switch to final clock source
-    switch_to_target_clock(ckcu, config)?;
-
-    // Step 8: Verify complete configuration
-    verify_final_configuration(ckcu, config)?;
-
-    Ok(())
+    ckcu.gcir()
+        .modify(|_, w| w.cksie().bit(config.clock_monitor));
+    ckcu.gccr()
+        .modify(|_, w| w.ckmen().bit(config.clock_monitor));
+    verify_final_configuration(config)
 }
 
-/// Start HSI oscillator with timeout protection
-fn start_hsi_oscillator(ckcu: &crate::pac::ckcu::RegisterBlock) -> Result<(), ClockError> {
-    // Enable HSI oscillator
-    ckcu.gccr().modify(|_, w| w.hsien().set_bit());
-
-    // Wait for HSI ready with simple timeout
-    let timeout_cycles = 480_000; // ~1ms at 48MHz
-
-    // Simple timeout loop
-    let mut timeout_counter = 0;
-    const TIMEOUT_MAX: u32 = 100_000;
-
-    while timeout_counter < TIMEOUT_MAX {
-        if ckcu.gcsr().read().hsirdy().bit_is_set() {
-            break;
-        }
-        timeout_counter += 1;
-        // Add small delay to prevent CPU spinning
-        for _ in 0..50 { cortex_m::asm::nop(); }
-    }
-
-    if timeout_counter >= TIMEOUT_MAX {
-        return Err(ClockError::ClockStartupTimeout("HSI"));
-    }
-
-    Ok(())
-}
-
-/// Start HSE oscillator with crystal startup protection
-fn start_hse_oscillator(ckcu: &ckcu::RegisterBlock, hse_freq: u32) -> Result<(), ClockError> {
-    // Enable HSE oscillator
-    ckcu.gccr().modify(|_, w| w.hseen().set_bit());
-
-    // Wait longer for crystal startup with simple timeout
-    let mut timeout_counter = 0;
-    const CRYSTAL_TIMEOUT_MAX: u32 = 300_000; // Longer timeout for crystal
-
-    while timeout_counter < CRYSTAL_TIMEOUT_MAX {
-        if ckcu.gcsr().read().hserdy().bit_is_set() {
-            break;
-        }
-        timeout_counter += 1;
-        // Add small delay to prevent CPU spinning
-        for _ in 0..100 { cortex_m::asm::nop(); }
-    }
-
-    if timeout_counter >= CRYSTAL_TIMEOUT_MAX {
-        // Increment failure counter for monitoring
-        unsafe { CLOCK_FAILURE_COUNT += 1; }
-        return Err(ClockError::ClockStartupTimeout("HSE"));
-    }
-
-    Ok(())
-}
-
-/// Configure PLL multiplication for target frequency
-fn configure_pll_multiplication(ckcu: &ckcu::RegisterBlock, config: &ClockConfig) -> Result<(), ClockError> {
-    // Configure PLL (HT32F523xx: PLLPLL = PCLK × (FBDIV + 1))
-    ckcu.pllcfgr().modify(|_, w| unsafe { w.pfbd().bits(config.pll_mult as u8 - 1) });
-
-    // Enable PLL and wait for lock
-    ckcu.gccr().modify(|_, w| w.pllen().set_bit());
-
-    // Wait for PLL lock with simple timeout
-    let mut timeout_counter = 0;
-    const PLL_TIMEOUT_MAX: u32 = 500_000; // Longer timeout for PLL
-
-    while timeout_counter < PLL_TIMEOUT_MAX {
-        if ckcu.gcsr().read().pllrdy().bit_is_set() {
-            break;
-        }
-        timeout_counter += 1;
-        // Small delay for PLL stability
-        for _ in 0..75 { cortex_m::asm::nop(); }
-    }
-
-    if timeout_counter >= PLL_TIMEOUT_MAX {
-        unsafe { CLOCK_FAILURE_COUNT += 1; }
-        return Err(ClockError::ClockStartupTimeout("PLL"));
-    }
-
-    Ok(())
-}
-
-/// Configure AHB and APB bus clock dividers
-fn configure_bus_clocks(_ckcu: &ckcu::RegisterBlock, _config: &ClockConfig) -> Result<(), ClockError> {
-    // Note: HT32F523xx typically uses 1:1 dividers for maximum performance
-    // Advanced divider configuration can be added if needed
-    Ok(())
-}
-
-/// Enable hardware clock monitoring for enterprise fault tolerance
-fn enable_clock_monitoring(ckcu: &ckcu::RegisterBlock) -> Result<(), ClockError> {
-    // Enable clock failure interrupt
-    ckcu.gcir().modify(|_, w| w.cksie().set_bit());
-
-    // Enable clock monitoring system
-    ckcu.gccr().modify(|_, w| w.ckmen().set_bit());
-
-    Ok(())
-}
-
-/// Switch to target clock source with verification
-fn switch_to_target_clock(ckcu: &ckcu::RegisterBlock, config: &ClockConfig) -> Result<(), ClockError> {
-    let target_source = if config.pll_enabled {
-        2 // PLL
-    } else if config.hse_enabled {
-        1 // HSE
-    } else {
-        0 // HSI
-    };
-
-    // Verify target clock is ready
-    let ready_flag = match target_source {
-        0 => return Err(ClockError::InvalidClockSource.into()), // HSI should always be ready
-        1 => ckcu.gcsr().read().hserdy().bit_is_set(),
-        2 => ckcu.gcsr().read().pllrdy().bit_is_set(),
-        _ => return Err(ClockError::InvalidClockSource.into()),
-    };
-
-    if !ready_flag {
-        return Err(ClockError::ClockSourceNotReady.into());
-    }
-
-    // Perform clock switch
-    ckcu.gccr().modify(|_, w| unsafe { w.sw().bits(target_source as u8) });
-
-    // Wait for switch completion with simple timeout
-    let mut timeout_counter = 0;
-    const SWITCH_TIMEOUT_MAX: u32 = 50_000; // Clock switch timeout
-
-    while timeout_counter < SWITCH_TIMEOUT_MAX {
-        let current_source = ckcu.gccr().read().sw().bits();
-        if current_source as u32 == target_source {
-            break;
-        }
-        timeout_counter += 1;
-        for _ in 0..20 { cortex_m::asm::nop(); }
-    }
-
-    if timeout_counter >= SWITCH_TIMEOUT_MAX {
-        return Err(ClockError::ClockSwitchTimeout);
-    }
-
-    Ok(())
-}
-
-/// Verify final clock configuration meets specifications
-fn verify_final_configuration(ckcu: &ckcu::RegisterBlock, config: &ClockConfig) -> Result<(), ClockError> {
-    // Basic frequency validation
-    if config.sysclock_hz > 144_000_000 {
+fn validate_config(config: &ClockConfig) -> Result<(), ClockError> {
+    if config.sysclock_hz == 0 || config.sysclock_hz > MAX_SYSCLK_HZ {
         return Err(ClockError::FrequencyOutOfRange);
     }
-
-    if config.ahb_divider > 15 || config.apb_divider > 7 {
+    if cfg!(feature = "usb")
+        && (!config.hse_enabled || !config.pll_enabled || config.sysclock_hz != MAX_SYSCLK_HZ)
+    {
+        return Err(ClockError::InvalidClockSource);
+    }
+    if config.ahb_divider > 5 || config.apb_divider != 0 {
         return Err(ClockError::InvalidBusDivider);
     }
 
-    // Verify current clock source matches configuration
-    let current_source = ckcu.gccr().read().sw().bits();
-    let expected_source = if config.pll_enabled { 2 } else if config.hse_enabled { 1 } else { 0 };
+    let input_hz = if config.hse_enabled {
+        let hse = config.hse_freq.ok_or(ClockError::InvalidClockSource)?;
+        if !(4_000_000..=16_000_000).contains(&hse) {
+            return Err(ClockError::FrequencyOutOfRange);
+        }
+        hse
+    } else {
+        if config.hse_freq.is_some() || config.clock_monitor {
+            return Err(ClockError::InvalidClockSource);
+        }
+        HSI_HZ
+    };
 
-    if current_source as u32 != expected_source {
-        return Err(ClockError::ConfigurationMismatch.into());
+    if config.pll_enabled {
+        if !(1..=16).contains(&config.pll_mult)
+            || input_hz.saturating_mul(config.pll_mult) != config.sysclock_hz
+        {
+            return Err(ClockError::ConfigurationMismatch);
+        }
+    } else if config.pll_mult != 1 || input_hz != config.sysclock_hz {
+        return Err(ClockError::ConfigurationMismatch);
     }
 
     Ok(())
 }
 
-// ============================================================================
-// Clock System Utilities
-// ============================================================================
+fn verify_final_configuration(config: &ClockConfig) -> Result<(), ClockError> {
+    if get_system_clock_frequency()? != config.sysclock_hz {
+        return Err(ClockError::ConfigurationMismatch);
+    }
 
-/// Get current system clock frequency with error checking
-pub fn get_system_clock_frequency() -> Result<u32, ClockError> {
-    let ckcu = unsafe { &*Ckcu::ptr() };
-
-    let current_source = ckcu.gccr().read().sw().bits() as u32;
-    let pllcfg = ckcu.pllcfgr().read();
-
-    // Calculate actual frequencies based on current configuration
-    let base_freq = match current_source {
-        0 => 8_000_000,     // HSI = 8MHz
-        1 => 16_000_000,    // HSE = 16MHz (typical)
-        2 => {
-            // PLL: frequency depends on input and multipliers
-            let pclk = get_bus_clock_frequency()?;
-            let multiplier = (pllcfg.pfbd().bits() + 1) as u32;
-            pclk * multiplier
-        }
-        _ => return Err(ClockError::UnknownClockSource),
+    let status = current_source_status();
+    let expected = if config.pll_enabled {
+        1
+    } else if config.hse_enabled {
+        2
+    } else {
+        3
     };
-
-    // Note: Using 1:1 bus dividers for maximum performance
-    Ok(base_freq) // Direct system clock frequency
+    if !clock_status_matches(status, expected) {
+        return Err(ClockError::ConfigurationMismatch);
+    }
+    Ok(())
 }
 
-/// Get current bus clock frequencies
+fn current_source_status() -> u8 {
+    unsafe { &*Ckcu::ptr() }.ckst().read().ckswst().bits()
+}
+
+fn clock_status_matches(status: u8, source: u8) -> bool {
+    if source == 1 {
+        status & 0b110 == 0
+    } else {
+        status == source
+    }
+}
+
+pub fn get_system_clock_frequency() -> Result<u32, ClockError> {
+    let frequency = crate::rcc::get_clocks().sys_clk().to_hz();
+    if frequency == 0 || frequency > MAX_SYSCLK_HZ {
+        Err(ClockError::FrequencyOutOfRange)
+    } else {
+        Ok(frequency)
+    }
+}
+
 pub fn get_bus_clock_frequency() -> Result<u32, ClockError> {
-    // Simplified: return system clock directly (1:1 dividers)
-    get_system_clock_frequency()
+    let frequency = crate::rcc::get_clocks().ahb_clk().to_hz();
+    if frequency == 0 || frequency > MAX_SYSCLK_HZ {
+        Err(ClockError::FrequencyOutOfRange)
+    } else {
+        Ok(frequency)
+    }
 }
 
-// ============================================================================
-// Error Handling and Monitoring
-// ============================================================================
-
-/// Errors that can occur during clock system initialisation
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ClockError {
     ClockStartupTimeout(&'static str),
@@ -354,156 +208,107 @@ pub enum ClockError {
 impl core::fmt::Display for ClockError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            ClockError::ClockStartupTimeout(peripheral) =>
-                write!(f, "{} clock startup timeout", peripheral),
-            ClockError::ClockSourceNotReady =>
-                write!(f, "Target clock source is not ready"),
-            ClockError::ClockSwitchTimeout =>
-                write!(f, "Clock source switch timeout"),
-            ClockError::FrequencyOutOfRange =>
-                write!(f, "Clock frequency exceeds hardware limits"),
-            ClockError::InvalidBusDivider =>
-                write!(f, "Invalid bus clock divider setting"),
-            ClockError::ConfigurationMismatch =>
-                write!(f, "Clock configuration verification failed"),
-            ClockError::UnknownClockSource =>
-                write!(f, "Unknown or invalid clock source"),
-            ClockError::InvalidClockSource =>
-                write!(f, "Invalid clock source selection"),
+            Self::ClockStartupTimeout(source) => write!(f, "{source} clock startup timeout"),
+            Self::ClockSourceNotReady => write!(f, "target clock source is not ready"),
+            Self::ClockSwitchTimeout => write!(f, "clock source switch timeout"),
+            Self::FrequencyOutOfRange => write!(f, "clock frequency is outside the 48 MHz limit"),
+            Self::InvalidBusDivider => write!(f, "invalid bus clock divider"),
+            Self::ConfigurationMismatch => write!(f, "clock configuration mismatch"),
+            Self::UnknownClockSource => write!(f, "unknown clock source"),
+            Self::InvalidClockSource => write!(f, "invalid clock source configuration"),
         }
     }
 }
 
 impl core::error::Error for ClockError {}
 
-// ============================================================================
-// Enterprise Features Integration
-// ============================================================================
-
-/// Enterprise-grade clock management summary for debugging
 pub struct ClockSystemSummary {
     pub configured_frequency: u32,
     pub actual_frequency: Result<u32, ClockError>,
     pub source: &'static str,
     pub failure_count: u32,
-    pub bus_settings: (u8, u8), // (ahb_div, apb_div)
+    pub bus_settings: (u8, u8),
 }
 
-/// Get comprehensive clock system summary
 pub fn get_clock_system_summary() -> ClockSystemSummary {
-    let actual_freq = get_system_clock_frequency();
+    let ckcu = unsafe { &*Ckcu::ptr() };
+    let ahb = ckcu.ahbcfgr().read().ahbpre().bits();
+    let source = match current_source_status() {
+        0 | 1 => "PLL",
+        2 => "HSE",
+        3 => "HSI",
+        6 => "LSE",
+        7 => "LSI",
+        _ => "Unknown",
+    };
+    let actual_frequency = get_system_clock_frequency();
 
     ClockSystemSummary {
-        configured_frequency: get_system_clock_frequency().unwrap_or(0),
-        actual_frequency: actual_freq,
-        source: match actual_freq.ok().unwrap_or(0) {
-            8000000 => "HSI",
-            16000000 => "HSE",
-            f if f > 48000000 => "PLL",
-            _ => "HSI/PLL",
-        },
+        configured_frequency: actual_frequency.unwrap_or(0),
+        actual_frequency,
+        source,
         failure_count: get_clock_failure_count(),
-        bus_settings: (0, 0), // Would be retrieved from actual registers
+        bus_settings: (ahb, 0),
     }
 }
 
-/// Quick clock system diagnostic check
 pub fn diagnostic_check() -> Result<(), ClockError> {
-    // Basic sanity checks
-    let current_freq = get_system_clock_frequency()?;
-
-    if current_freq > 144_000_000 {
+    let frequency = get_system_clock_frequency()?;
+    if !(1_000_000..=MAX_SYSCLK_HZ).contains(&frequency) {
         return Err(ClockError::FrequencyOutOfRange);
     }
-
-    if current_freq == 0 {
-        return Err(ClockError::UnknownClockSource);
-    }
-
     Ok(())
 }
 
-// ============================================================================
-// Hardware Fault Handler (Clock Monitoring)
-// ============================================================================
-
-/// Hardware clock failure NMI handler
-/// This MUST be called from the actual NMI interrupt vector
+/// HSE clock-failure NMI fallback.
 #[inline(always)]
 pub extern "C" fn handle_clock_failure() {
     let ckcu = unsafe { &*Ckcu::ptr() };
+    if !ckcu.gcir().read().cksf().bit_is_set() {
+        return;
+    }
 
-    critical_section::with(|_| {
-        // Check if this is actually a clock failure
-        if ckcu.gcir().read().cksf().bit_is_set() {
-            // Clear the failure flag
-            ckcu.gcir().modify(|_, w| w.cksf().set_bit());
+    let failures = CLOCK_FAILURE_COUNT.load(Ordering::Relaxed);
+    CLOCK_FAILURE_COUNT.store(failures.saturating_add(1), Ordering::Relaxed);
+    ckcu.gccr().modify(|_, w| w.ckmen().clear_bit());
+    // CKSF is W1C. A direct write clears it and disables further CKSIE NMIs.
+    unsafe { ckcu.gcir().write(|w| w.bits(1)) };
+    ckcu.gccr().modify(|_, w| w.sw().variant(3));
 
-            // Disable monitoring to prevent repeated interrupts
-            ckcu.gccr().modify(|_, w| w.ckmen().clear_bit());
-
-            // Record failure event
-            unsafe { CLOCK_FAILURE_COUNT += 1; }
-
-            // Automatic fallback to HSI (enterprise feature)
-            ckcu.gccr().modify(|_, w| {
-                unsafe { w.sw().bits(0) }; // Switch to HSI
-                w.pllen().clear_bit() // Disable PLL for stability
-            });
+    // CKST, not GCCR.SW, confirms the HSI fallback is active. Bound the wait
+    // because this function executes in NMI context.
+    for _ in 0..100_000 {
+        if clock_status_matches(current_source_status(), 3) {
+            ckcu.gccr().modify(|_, w| w.pllen().clear_bit());
+            return;
         }
-    });
+        core::hint::spin_loop();
+    }
 }
 
-// Crate private function for system initialization use
 pub(crate) fn init_flow_init() -> Result<(), ClockError> {
-    // Generate default enterprise configuration
-    let config = ClockConfig::default();
-    clock_system_init(&config)
+    clock_system_init(&ClockConfig::default())
 }
-
-// ============================================================================
-// Testing and Validation
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_clock_config_creation() {
-        let config = ClockConfig::default();
-        assert_eq!(config.sysclock_hz, 48_000_000);
-        assert_eq!(config.pll_mult, 6);
-        assert!(config.clock_monitor);
-        assert!(!config.hse_enabled);
-    }
-
-    #[test]
-    fn test_enterprise_config() {
+    fn board_performance_config_uses_8mhz_hse() {
         let config = config_enterprise_performance();
-        assert_eq!(config.sysclock_hz, 48_000_000);
-        assert!(config.hse_enabled);
-        assert_eq!(config.hse_freq, Some(16_000_000));
-        assert!(config.clock_monitor);
+        assert_eq!(config.hse_freq, Some(8_000_000));
+        assert_eq!(config.pll_mult, 6);
+        assert_eq!(validate_config(&config), Ok(()));
     }
 
     #[test]
-    fn test_low_power_config() {
-        let config = config_low_power();
-        assert_eq!(config.sysclock_hz, 8_000_000);
-        assert!(!config.pll_enabled); // No PLL for power savings
-        assert!(config.clock_monitor); // Still have monitoring
-    }
-
-    #[test]
-    fn test_clock_failure_counting() {
-        reset_clock_failure_count();
-        assert_eq!(get_clock_failure_count(), 0);
-
-        unsafe { CLOCK_FAILURE_COUNT += 1; }
-        assert_eq!(get_clock_failure_count(), 1);
-
-        reset_clock_failure_count();
-        assert_eq!(get_clock_failure_count(), 0);
+    fn rejects_clock_above_device_limit() {
+        let mut config = ClockConfig::default();
+        config.sysclock_hz = 144_000_000;
+        assert_eq!(
+            validate_config(&config),
+            Err(ClockError::FrequencyOutOfRange)
+        );
     }
 }

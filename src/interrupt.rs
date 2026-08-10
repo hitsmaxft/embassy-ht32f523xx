@@ -4,15 +4,14 @@
 //! for Embassy async drivers.
 
 use core::marker::PhantomData;
-use embassy_sync::waitqueue::AtomicWaker;
 use core::task::Poll;
+use embassy_sync::waitqueue::AtomicWaker;
 
 pub use crate::pac::Interrupt;
 
 // Re-export interrupt macro if available
 #[cfg(feature = "rt")]
 pub use crate::pac::interrupt;
-
 
 /// Default interrupt handler placeholder
 #[unsafe(no_mangle)]
@@ -173,7 +172,7 @@ pub unsafe extern "C" fn EXTI4_15() {
     EXTI4_15_WAKER.wake();
 }
 
-#[cfg(feature = "rt")]
+#[cfg(all(feature = "rt", feature = "usb"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn USB() {
     // 🚨 安全地调用 USB 驱动的事件处理器

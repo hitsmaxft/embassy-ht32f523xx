@@ -4,7 +4,9 @@
 
 use core::ptr;
 use embassy_time::{Duration, Timer};
-use embedded_storage::nor_flash::{ErrorType, NorFlash, ReadNorFlash, NorFlashError, NorFlashErrorKind};
+use embedded_storage::nor_flash::{
+    ErrorType, NorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash,
+};
 
 use crate::pac;
 
@@ -21,16 +23,15 @@ impl Flash {
 
     /// Get the flash capacity in bytes
     pub fn capacity(&self) -> usize {
-        crate::chip::MEMORY.flash_kb as usize * 1024
+        crate::chip::MEMORY.usable_flash_bytes as usize
     }
 
-    /// Wait for flash operation to complete
-    async fn wait_ready(&self) -> Result<(), FlashError> {
+    async fn wait_for_idle(&self) -> Result<(), FlashError> {
         let fmc = unsafe { &*pac::Fmc::ptr() };
 
-        // Wait for operation to complete (bit 0 of OISR is busy flag)
+        // OPCR.OPM is 0x6 when idle and 0xE after an operation completes.
         let mut timeout = 1000; // 1000ms timeout
-        while fmc.oisr().read().bits() & 0x01 != 0 && timeout > 0 {
+        while !matches!(fmc.opcr().read().opm().bits(), 0x6 | 0xE) && timeout > 0 {
             Timer::after(Duration::from_millis(1)).await;
             timeout -= 1;
         }
@@ -39,51 +40,49 @@ impl Flash {
             return Err(FlashError::Timeout);
         }
 
-        // Check for errors
-        let status = fmc.oisr().read().bits();
-        if status & 0x02 != 0 {
-            return Err(FlashError::WriteError);
-        }
-        if status & 0x04 != 0 {
-            return Err(FlashError::EraseError);
-        }
-
         Ok(())
     }
 
-    /// Unlock flash for writing/erasing
-    fn unlock(&self) {
+    /// Wait for flash operation to complete and inspect its raw error state.
+    async fn wait_ready(&self) -> Result<(), FlashError> {
+        self.wait_for_idle().await?;
         let fmc = unsafe { &*pac::Fmc::ptr() };
 
-        // Write unlock sequence to OCMR register
-        fmc.ocmr().write(|w| unsafe { w.bits(0xA9B8C7D6) });
-        fmc.ocmr().write(|w| unsafe { w.bits(0xD6C7B8A9) });
-    }
+        // PPEF is a raw protection error flag and remains meaningful without
+        // enabling the interrupt-generating OIER error bits.
+        let status = fmc.oisr().read().bits();
+        if status & (1 << 17) != 0 {
+            return Err(FlashError::Protected);
+        }
 
-    /// Lock flash to prevent accidental writes
-    fn lock(&self) {
-        let fmc = unsafe { &*pac::Fmc::ptr() };
-        fmc.ocmr().write(|w| unsafe { w.bits(0x00000000) });
+        Ok(())
     }
 
     /// Erase a page of flash memory
     async fn erase_page(&self, address: u32) -> Result<(), FlashError> {
         let fmc = unsafe { &*pac::Fmc::ptr() };
 
-        // Unlock flash
-        self.unlock();
+        self.wait_for_idle().await?;
 
         // Set target address
         fmc.tadr().write(|w| unsafe { w.bits(address) });
 
-        // Set erase operation mode (OPM = 0x2 for page erase)
-        fmc.opcr().write(|w| unsafe { w.opm().bits(0x2) });
+        // Select page erase (OCMR.CMD=0x8), then commit it to main Flash
+        // with OPCR.OPM=0xA.
+        fmc.ocmr().write(|w| unsafe { w.cmd().bits(0x8) });
+        fmc.opcr().write(|w| unsafe { w.opm().bits(0xA) });
 
         // Wait for operation to complete
         self.wait_ready().await?;
 
-        // Lock flash
-        self.lock();
+        // OISR error flags depend on OIER. Verify the erased page directly so
+        // failures remain visible while the interrupt sources are disabled.
+        for offset in (0..Self::ERASE_SIZE).step_by(4) {
+            let word = unsafe { ptr::read_volatile((address as usize + offset) as *const u32) };
+            if word != u32::MAX {
+                return Err(FlashError::EraseError);
+            }
+        }
 
         Ok(())
     }
@@ -92,8 +91,7 @@ impl Flash {
     async fn write_word(&self, address: u32, data: u32) -> Result<(), FlashError> {
         let fmc = unsafe { &*pac::Fmc::ptr() };
 
-        // Unlock flash
-        self.unlock();
+        self.wait_for_idle().await?;
 
         // Set target address
         fmc.tadr().write(|w| unsafe { w.bits(address) });
@@ -101,14 +99,18 @@ impl Flash {
         // Set write data
         fmc.wrdr().write(|w| unsafe { w.bits(data) });
 
-        // Set write operation mode (OPM = 0x4 for word write)
-        fmc.opcr().write(|w| unsafe { w.opm().bits(0x4) });
+        // Select word program (OCMR.CMD=0x4), then commit it with
+        // OPCR.OPM=0xA.
+        fmc.ocmr().write(|w| unsafe { w.cmd().bits(0x4) });
+        fmc.opcr().write(|w| unsafe { w.opm().bits(0xA) });
 
         // Wait for operation to complete
         self.wait_ready().await?;
 
-        // Lock flash
-        self.lock();
+        let programmed = unsafe { ptr::read_volatile(address as *const u32) };
+        if programmed != data {
+            return Err(FlashError::WriteError);
+        }
 
         Ok(())
     }
@@ -119,6 +121,7 @@ pub enum FlashError {
     Timeout,
     WriteError,
     EraseError,
+    Protected,
     AddressOutOfRange,
     UnalignedAddress,
 }
@@ -129,6 +132,7 @@ impl NorFlashError for FlashError {
             FlashError::Timeout => NorFlashErrorKind::Other,
             FlashError::WriteError => NorFlashErrorKind::Other,
             FlashError::EraseError => NorFlashErrorKind::Other,
+            FlashError::Protected => NorFlashErrorKind::Other,
             FlashError::AddressOutOfRange => NorFlashErrorKind::OutOfBounds,
             FlashError::UnalignedAddress => NorFlashErrorKind::NotAligned,
         }
@@ -146,17 +150,16 @@ impl ReadNorFlash for Flash {
         let flash_base = 0x0000_0000u32;
         let address = flash_base + offset;
 
-        if address >= self.capacity() as u32 {
+        let Some(end) = offset.checked_add(bytes.len() as u32) else {
+            return Err(FlashError::AddressOutOfRange);
+        };
+        if end > self.capacity() as u32 {
             return Err(FlashError::AddressOutOfRange);
         }
 
         // Read directly from flash memory
         unsafe {
-            ptr::copy_nonoverlapping(
-                address as *const u8,
-                bytes.as_mut_ptr(),
-                bytes.len(),
-            );
+            ptr::copy_nonoverlapping(address as *const u8, bytes.as_mut_ptr(), bytes.len());
         }
 
         Ok(())
@@ -169,7 +172,7 @@ impl ReadNorFlash for Flash {
 
 impl NorFlash for Flash {
     const WRITE_SIZE: usize = 4; // HT32 flash writes in 32-bit words
-    const ERASE_SIZE: usize = 1024; // HT32 typical page size is 1KB
+    const ERASE_SIZE: usize = 512;
 
     fn erase(&mut self, from: u32, to: u32) -> Result<(), Self::Error> {
         if from % Self::ERASE_SIZE as u32 != 0 || to % Self::ERASE_SIZE as u32 != 0 {
@@ -191,7 +194,10 @@ impl NorFlash for Flash {
             return Err(FlashError::UnalignedAddress);
         }
 
-        if offset + bytes.len() as u32 > self.capacity() as u32 {
+        let Some(end) = offset.checked_add(bytes.len() as u32) else {
+            return Err(FlashError::AddressOutOfRange);
+        };
+        if end > self.capacity() as u32 {
             return Err(FlashError::AddressOutOfRange);
         }
 
@@ -233,7 +239,10 @@ impl Flash {
             return Err(FlashError::UnalignedAddress);
         }
 
-        if offset + bytes.len() as u32 > self.capacity() as u32 {
+        let Some(end) = offset.checked_add(bytes.len() as u32) else {
+            return Err(FlashError::AddressOutOfRange);
+        };
+        if end > self.capacity() as u32 {
             return Err(FlashError::AddressOutOfRange);
         }
 
@@ -247,10 +256,10 @@ impl Flash {
 
         for _ in 0..(bytes.len() / Self::WRITE_SIZE) {
             let word = unsafe {
-                ((*data_ptr) as u32) |
-                ((*data_ptr.add(1)) as u32) << 8 |
-                ((*data_ptr.add(2)) as u32) << 16 |
-                ((*data_ptr.add(3)) as u32) << 24
+                ((*data_ptr) as u32)
+                    | ((*data_ptr.add(1)) as u32) << 8
+                    | ((*data_ptr.add(2)) as u32) << 16
+                    | ((*data_ptr.add(3)) as u32) << 24
             };
 
             self.write_word(address, word).await?;

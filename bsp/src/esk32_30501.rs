@@ -1,11 +1,16 @@
-use crate::hal::gpio::{Pin, mode, Level, Speed};
+use crate::hal::gpio::{Level, Pin, Speed, mode};
 
 pub struct Board {
+    /// LED1 is active-low and connected to PC14.
     pub led1: Pin<'C', 14, mode::Output>,
+    /// LED2 is active-low and connected to PC15.
     pub led2: Pin<'C', 15, mode::Output>,
-    pub user_button: Pin<'B', 12, mode::Input>,
-    pub uart_tx: Pin<'A', 2, mode::Input>,
-    pub uart_rx: Pin<'A', 3, mode::Input>,
+    /// PB12/WAKEUP is routed to CN4 pin 27; it is not an on-board button.
+    pub wake_up: Pin<'B', 12, mode::Input>,
+    /// USART0 TX routed as M_TX on CN4 pin 13.
+    pub uart_tx: Pin<'A', 2, mode::AlternateFunction<6>>,
+    /// USART0 RX routed as M_RX on CN4 pin 14.
+    pub uart_rx: Pin<'A', 3, mode::AlternateFunction<6>>,
 }
 
 impl Board {
@@ -18,11 +23,12 @@ impl Board {
         let pa3_input = Pin::<'A', 3, mode::Input>::new();
 
         Self {
-            led1: pc14_input.into_push_pull_output(Level::Low, Speed::Low),
-            led2: pc15_input.into_push_pull_output(Level::Low, Speed::Low),
-            user_button: pb12_input.into_floating_input(),
-            uart_tx: pa2_input,
-            uart_rx: pa3_input,
+            // LEDs are wired from VDD33 to the GPIOs, so high is off.
+            led1: pc14_input.into_push_pull_output(Level::High, Speed::Low),
+            led2: pc15_input.into_push_pull_output(Level::High, Speed::Low),
+            wake_up: pb12_input.into_floating_input(),
+            uart_tx: pa2_input.into_alternate_function::<6>(),
+            uart_rx: pa3_input.into_alternate_function_input::<6>(),
         }
     }
 }
@@ -39,8 +45,8 @@ impl Leds {
         let pc15_input = Pin::<'C', 15, mode::Input>::new();
 
         Self {
-            led1: pc14_input.into_push_pull_output(Level::Low, Speed::Low),
-            led2: pc15_input.into_push_pull_output(Level::Low, Speed::Low),
+            led1: pc14_input.into_push_pull_output(Level::High, Speed::Low),
+            led2: pc15_input.into_push_pull_output(Level::High, Speed::Low),
         }
     }
 }

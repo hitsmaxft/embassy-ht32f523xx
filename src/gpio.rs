@@ -15,14 +15,25 @@
 //! **PA5** - USART_RX function in Boot loader mode
 //!
 //! ### Alternate Function (AF) Numbers
-//! - AF0: Default GPIO function
-//! - AF1-AF9: Various peripherals (Timers, SPI, I2C, UART)
-//! - **AF0: USB, specific peripherals** (including PC6/PC7 for USB)
+//! - AF0: system-default functions, including USB on PC6/PC7
+//! - AF1: GPIO
+//! - AF2..AF15: peripheral functions; USART/UART is AF6
 
 use core::marker::PhantomData;
 
 // Helper macro for GPIO operations
 macro_rules! gpio_impl {
+    ($port:expr, $pin:expr, $op:ident, $value:expr) => {
+        unsafe {
+            match $port {
+                'A' => gpio_op!(&*Gpioa::ptr(), $pin, $op, $value),
+                'B' => gpio_op!(&*Gpiob::ptr(), $pin, $op, $value),
+                'C' => gpio_op!(&*Gpioc::ptr(), $pin, $op, $value),
+                'D' => gpio_op!(&*Gpiod::ptr(), $pin, $op, $value),
+                _ => panic!("Invalid GPIO port"),
+            }
+        }
+    };
     ($port:expr, $pin:expr, $op:ident) => {
         unsafe {
             match $port {
@@ -63,6 +74,22 @@ macro_rules! gpio_op {
             w.bits(val)
         })
     };
+    ($gpio:expr, $pin:expr, enable_input) => {
+        $gpio.iner().modify(|r, w| w.bits(r.bits() | (1 << $pin)))
+    };
+    ($gpio:expr, $pin:expr, disable_input) => {
+        $gpio.iner().modify(|r, w| w.bits(r.bits() & !(1 << $pin)))
+    };
+    ($gpio:expr, $pin:expr, set_push_pull) => {
+        $gpio.odr().modify(|r, w| w.bits(r.bits() & !(1 << $pin)))
+    };
+    ($gpio:expr, $pin:expr, set_drive, $drive:expr) => {
+        $gpio.drvr().modify(|r, w| {
+            let shift = $pin * 2;
+            let value = (r.bits() & !(0b11 << shift)) | (($drive as u32) << shift);
+            w.bits(value)
+        })
+    };
     ($gpio:expr, $pin:expr, set_high) => {
         $gpio.srr().write(|w| w.bits(1 << $pin))
     };
@@ -88,9 +115,9 @@ macro_rules! gpio_op {
         $gpio.pdr().modify(|r, w| w.bits(r.bits() & !(1 << $pin)));
     }};
 }
+use crate::exti::{Edge, ExtiChannel};
+use crate::pac::{Afio, Gpioa, Gpiob, Gpioc, Gpiod};
 use embedded_hal::digital::{ErrorType, InputPin, OutputPin, StatefulOutputPin};
-use crate::pac::{Gpioa, Gpiob, Gpioc, Gpiod, Afio};
-use crate::exti::{ExtiChannel, Edge};
 
 /// GPIO error type
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -120,11 +147,7 @@ impl From<Level> for bool {
 
 impl From<bool> for Level {
     fn from(value: bool) -> Self {
-        if value {
-            Level::High
-        } else {
-            Level::Low
-        }
+        if value { Level::High } else { Level::Low }
     }
 }
 
@@ -422,8 +445,8 @@ impl<const PORT: char, const PIN: u8, MODE> Pin<PORT, PIN, MODE> {
     pub fn into_push_pull_output_with_config(
         self,
         level: Level,
-        _speed: Speed,
-        pull: Pull
+        speed: Speed,
+        pull: Pull,
     ) -> Pin<PORT, PIN, mode::Output> {
         // Set initial output level
         if level == Level::High {
@@ -434,6 +457,17 @@ impl<const PORT: char, const PIN: u8, MODE> Pin<PORT, PIN, MODE> {
 
         // Configure pin as output
         gpio_impl!(PORT, PIN, set_output);
+        gpio_impl!(PORT, PIN, disable_input);
+        gpio_impl!(PORT, PIN, set_push_pull);
+
+        // PxDRVR selects 4, 8, 12, or 16 mA per pin.
+        let drive = match speed {
+            Speed::Low => 0,
+            Speed::Medium => 1,
+            Speed::High => 2,
+            Speed::VeryHigh => 3,
+        };
+        gpio_impl!(PORT, PIN, set_drive, drive);
 
         // Configure pull-up/pull-down if needed
         configure_pull::<PORT, PIN>(pull);
@@ -450,6 +484,7 @@ impl<const PORT: char, const PIN: u8, MODE> Pin<PORT, PIN, MODE> {
     pub fn into_input_with_pull(self, pull: Pull) -> Pin<PORT, PIN, mode::Input> {
         // Configure pin as input
         gpio_impl!(PORT, PIN, set_input);
+        gpio_impl!(PORT, PIN, enable_input);
 
         // Configure pull-up/pull-down
         configure_pull::<PORT, PIN>(pull);
@@ -458,12 +493,29 @@ impl<const PORT: char, const PIN: u8, MODE> Pin<PORT, PIN, MODE> {
     }
 
     /// Convert pin to alternate function mode
-    pub fn into_alternate_function<const AF: u8>(self) -> Pin<PORT, PIN, mode::AlternateFunction<AF>> {
-        // For HT32, alternate function is configured through AFIO only
-        // Set pin as output for most AF functions
+    pub fn into_alternate_function<const AF: u8>(
+        self,
+    ) -> Pin<PORT, PIN, mode::AlternateFunction<AF>> {
+        // Output-oriented alternate function. Input-oriented peripherals must
+        // use `into_alternate_function_input` so PxINER is enabled.
         gpio_impl!(PORT, PIN, set_output);
+        gpio_impl!(PORT, PIN, disable_input);
 
         // Configure alternate function in AFIO
+        unsafe {
+            configure_alternate_function::<PORT, PIN, AF>();
+        }
+
+        Pin { _mode: PhantomData }
+    }
+
+    /// Convert a pin to an input-oriented alternate function.
+    pub fn into_alternate_function_input<const AF: u8>(
+        self,
+    ) -> Pin<PORT, PIN, mode::AlternateFunction<AF>> {
+        gpio_impl!(PORT, PIN, set_input);
+        gpio_impl!(PORT, PIN, enable_input);
+
         unsafe {
             configure_alternate_function::<PORT, PIN, AF>();
         }
@@ -600,8 +652,8 @@ pub(crate) fn configure_usb_pins() {
         .modify(|r, w| unsafe { w.bits(r.bits() & !USB_AF_MASK) });
 }
 
-
 unsafe fn configure_alternate_function<const PORT: char, const PIN: u8, const AF: u8>() {
+    assert!(AF < 16, "HT32 alternate-function selector is 4 bits");
     // Configure AFIO for alternate function
     let afio = unsafe { &*Afio::ptr() };
 
@@ -612,14 +664,14 @@ unsafe fn configure_alternate_function<const PORT: char, const PIN: u8, const AF
             if PIN < 8 {
                 afio.gpacfglr().modify(|r, w| {
                     let mut val = r.bits();
-                    val &= !(0b1111 << (PIN * 4));  // Clear AF bits (4 bits per pin)
+                    val &= !(0b1111 << (PIN * 4)); // Clear AF bits (4 bits per pin)
                     val |= (AF as u32) << (PIN * 4); // Set AF value
                     unsafe { w.bits(val) }
                 });
             } else {
                 afio.gpacfghr().modify(|r, w| {
                     let mut val = r.bits();
-                    val &= !(0b1111 << ((PIN - 8) * 4));  // Clear AF bits
+                    val &= !(0b1111 << ((PIN - 8) * 4)); // Clear AF bits
                     val |= (AF as u32) << ((PIN - 8) * 4); // Set AF value
                     unsafe { w.bits(val) }
                 });
@@ -702,22 +754,54 @@ impl PortA {
         Self { _private: () }
     }
 
-    pub fn pa0(&mut self) -> PA0 { Pin { _mode: PhantomData } }
-    pub fn pa1(&mut self) -> PA1 { Pin { _mode: PhantomData } }
-    pub fn pa2(&mut self) -> PA2 { Pin { _mode: PhantomData } }
-    pub fn pa3(&mut self) -> PA3 { Pin { _mode: PhantomData } }
-    pub fn pa4(&mut self) -> PA4 { Pin { _mode: PhantomData } }
-    pub fn pa5(&mut self) -> PA5 { Pin { _mode: PhantomData } }
-    pub fn pa6(&mut self) -> PA6 { Pin { _mode: PhantomData } }
-    pub fn pa7(&mut self) -> PA7 { Pin { _mode: PhantomData } }
-    pub fn pa8(&mut self) -> PA8 { Pin { _mode: PhantomData } }
-    pub fn pa9(&mut self) -> PA9 { Pin { _mode: PhantomData } }
-    pub fn pa10(&mut self) -> PA10 { Pin { _mode: PhantomData } }
-    pub fn pa11(&mut self) -> PA11 { Pin { _mode: PhantomData } }
-    pub fn pa12(&mut self) -> PA12 { Pin { _mode: PhantomData } }
-    pub fn pa13(&mut self) -> PA13 { Pin { _mode: PhantomData } }
-    pub fn pa14(&mut self) -> PA14 { Pin { _mode: PhantomData } }
-    pub fn pa15(&mut self) -> PA15 { Pin { _mode: PhantomData } }
+    pub fn pa0(&mut self) -> PA0 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa1(&mut self) -> PA1 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa2(&mut self) -> PA2 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa3(&mut self) -> PA3 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa4(&mut self) -> PA4 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa5(&mut self) -> PA5 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa6(&mut self) -> PA6 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa7(&mut self) -> PA7 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa8(&mut self) -> PA8 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa9(&mut self) -> PA9 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa10(&mut self) -> PA10 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa11(&mut self) -> PA11 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa12(&mut self) -> PA12 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa13(&mut self) -> PA13 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa14(&mut self) -> PA14 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pa15(&mut self) -> PA15 {
+        Pin { _mode: PhantomData }
+    }
 }
 
 impl PortB {
@@ -725,22 +809,54 @@ impl PortB {
         Self { _private: () }
     }
 
-    pub fn pb0(&mut self) -> PB0 { Pin { _mode: PhantomData } }
-    pub fn pb1(&mut self) -> PB1 { Pin { _mode: PhantomData } }
-    pub fn pb2(&mut self) -> PB2 { Pin { _mode: PhantomData } }
-    pub fn pb3(&mut self) -> PB3 { Pin { _mode: PhantomData } }
-    pub fn pb4(&mut self) -> PB4 { Pin { _mode: PhantomData } }
-    pub fn pb5(&mut self) -> PB5 { Pin { _mode: PhantomData } }
-    pub fn pb6(&mut self) -> PB6 { Pin { _mode: PhantomData } }
-    pub fn pb7(&mut self) -> PB7 { Pin { _mode: PhantomData } }
-    pub fn pb8(&mut self) -> PB8 { Pin { _mode: PhantomData } }
-    pub fn pb9(&mut self) -> PB9 { Pin { _mode: PhantomData } }
-    pub fn pb10(&mut self) -> PB10 { Pin { _mode: PhantomData } }
-    pub fn pb11(&mut self) -> PB11 { Pin { _mode: PhantomData } }
-    pub fn pb12(&mut self) -> PB12 { Pin { _mode: PhantomData } }
-    pub fn pb13(&mut self) -> PB13 { Pin { _mode: PhantomData } }
-    pub fn pb14(&mut self) -> PB14 { Pin { _mode: PhantomData } }
-    pub fn pb15(&mut self) -> PB15 { Pin { _mode: PhantomData } }
+    pub fn pb0(&mut self) -> PB0 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb1(&mut self) -> PB1 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb2(&mut self) -> PB2 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb3(&mut self) -> PB3 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb4(&mut self) -> PB4 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb5(&mut self) -> PB5 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb6(&mut self) -> PB6 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb7(&mut self) -> PB7 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb8(&mut self) -> PB8 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb9(&mut self) -> PB9 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb10(&mut self) -> PB10 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb11(&mut self) -> PB11 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb12(&mut self) -> PB12 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb13(&mut self) -> PB13 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb14(&mut self) -> PB14 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pb15(&mut self) -> PB15 {
+        Pin { _mode: PhantomData }
+    }
 }
 
 impl PortC {
@@ -748,22 +864,54 @@ impl PortC {
         Self { _private: () }
     }
 
-    pub fn pc0(&mut self) -> PC0 { Pin { _mode: PhantomData } }
-    pub fn pc1(&mut self) -> PC1 { Pin { _mode: PhantomData } }
-    pub fn pc2(&mut self) -> PC2 { Pin { _mode: PhantomData } }
-    pub fn pc3(&mut self) -> PC3 { Pin { _mode: PhantomData } }
-    pub fn pc4(&mut self) -> PC4 { Pin { _mode: PhantomData } }
-    pub fn pc5(&mut self) -> PC5 { Pin { _mode: PhantomData } }
-    pub fn pc6(&mut self) -> PC6 { Pin { _mode: PhantomData } }
-    pub fn pc7(&mut self) -> PC7 { Pin { _mode: PhantomData } }
-    pub fn pc8(&mut self) -> PC8 { Pin { _mode: PhantomData } }
-    pub fn pc9(&mut self) -> PC9 { Pin { _mode: PhantomData } }
-    pub fn pc10(&mut self) -> PC10 { Pin { _mode: PhantomData } }
-    pub fn pc11(&mut self) -> PC11 { Pin { _mode: PhantomData } }
-    pub fn pc12(&mut self) -> PC12 { Pin { _mode: PhantomData } }
-    pub fn pc13(&mut self) -> PC13 { Pin { _mode: PhantomData } }
-    pub fn pc14(&mut self) -> PC14 { Pin { _mode: PhantomData } }
-    pub fn pc15(&mut self) -> PC15 { Pin { _mode: PhantomData } }
+    pub fn pc0(&mut self) -> PC0 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc1(&mut self) -> PC1 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc2(&mut self) -> PC2 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc3(&mut self) -> PC3 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc4(&mut self) -> PC4 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc5(&mut self) -> PC5 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc6(&mut self) -> PC6 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc7(&mut self) -> PC7 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc8(&mut self) -> PC8 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc9(&mut self) -> PC9 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc10(&mut self) -> PC10 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc11(&mut self) -> PC11 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc12(&mut self) -> PC12 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc13(&mut self) -> PC13 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc14(&mut self) -> PC14 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pc15(&mut self) -> PC15 {
+        Pin { _mode: PhantomData }
+    }
 }
 
 impl PortD {
@@ -771,22 +919,54 @@ impl PortD {
         Self { _private: () }
     }
 
-    pub fn pd0(&mut self) -> PD0 { Pin { _mode: PhantomData } }
-    pub fn pd1(&mut self) -> PD1 { Pin { _mode: PhantomData } }
-    pub fn pd2(&mut self) -> PD2 { Pin { _mode: PhantomData } }
-    pub fn pd3(&mut self) -> PD3 { Pin { _mode: PhantomData } }
-    pub fn pd4(&mut self) -> PD4 { Pin { _mode: PhantomData } }
-    pub fn pd5(&mut self) -> PD5 { Pin { _mode: PhantomData } }
-    pub fn pd6(&mut self) -> PD6 { Pin { _mode: PhantomData } }
-    pub fn pd7(&mut self) -> PD7 { Pin { _mode: PhantomData } }
-    pub fn pd8(&mut self) -> PD8 { Pin { _mode: PhantomData } }
-    pub fn pd9(&mut self) -> PD9 { Pin { _mode: PhantomData } }
-    pub fn pd10(&mut self) -> PD10 { Pin { _mode: PhantomData } }
-    pub fn pd11(&mut self) -> PD11 { Pin { _mode: PhantomData } }
-    pub fn pd12(&mut self) -> PD12 { Pin { _mode: PhantomData } }
-    pub fn pd13(&mut self) -> PD13 { Pin { _mode: PhantomData } }
-    pub fn pd14(&mut self) -> PD14 { Pin { _mode: PhantomData } }
-    pub fn pd15(&mut self) -> PD15 { Pin { _mode: PhantomData } }
+    pub fn pd0(&mut self) -> PD0 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd1(&mut self) -> PD1 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd2(&mut self) -> PD2 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd3(&mut self) -> PD3 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd4(&mut self) -> PD4 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd5(&mut self) -> PD5 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd6(&mut self) -> PD6 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd7(&mut self) -> PD7 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd8(&mut self) -> PD8 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd9(&mut self) -> PD9 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd10(&mut self) -> PD10 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd11(&mut self) -> PD11 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd12(&mut self) -> PD12 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd13(&mut self) -> PD13 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd14(&mut self) -> PD14 {
+        Pin { _mode: PhantomData }
+    }
+    pub fn pd15(&mut self) -> PD15 {
+        Pin { _mode: PhantomData }
+    }
 }
 
 /// Extension trait for GPIO port setup

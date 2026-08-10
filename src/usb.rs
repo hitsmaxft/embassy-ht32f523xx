@@ -47,10 +47,10 @@ const DATA_EP_BASE: usize = EP0_TX_OFFSET + 2 * MAX_PACKET_SIZE as usize;
 const _: () = assert!(DATA_EP_BASE + (EP_COUNT - 1) * MAX_PACKET_SIZE as usize <= USB_SRAM_SIZE);
 
 // USB global register bits.
+const CSR_FRES: u32 = 1 << 1;
 const CSR_PDWN: u32 = 1 << 2;
 const CSR_LPMODE: u32 = 1 << 3;
 const CSR_DPPUEN: u32 = 1 << 10;
-const CSR_DPWKEN: u32 = 1 << 11;
 
 const IER_UGIE: u32 = 1 << 0;
 const IER_URSTIE: u32 = 1 << 2;
@@ -58,9 +58,12 @@ const IER_RSMIE: u32 = 1 << 3;
 const IER_SUSPIE: u32 = 1 << 4;
 const IER_EP0IE: u32 = 1 << 8;
 
+const ISR_SOFIF: u32 = 1 << 1;
 const ISR_URSTIF: u32 = 1 << 2;
 const ISR_RSMIF: u32 = 1 << 3;
 const ISR_SUSPIF: u32 = 1 << 4;
+const ISR_ENDPOINT_MASK: u32 = 0xff << 8;
+const ISR_W1C_MASK: u32 = ISR_SOFIF | ISR_URSTIF | ISR_RSMIF | ISR_SUSPIF | ISR_ENDPOINT_MASK;
 // Endpoint registers and fields.
 const EP_REG_STRIDE: usize = 0x14;
 const EP_CSR_OFFSET: usize = 0x00;
@@ -83,6 +86,8 @@ const EP_INT_UER: u32 = 1 << 7;
 const EP_INT_SDRX: u32 = 1 << 9;
 const EP_INT_SDER: u32 = 1 << 10;
 const EP_INT_ZLRX: u32 = 1 << 11;
+const EP0_INTERRUPT_MASK: u32 = 0x0fff;
+const DATA_EP_INTERRUPT_MASK: u32 = 0x00ff;
 
 const EP_CFGR_EPEN: u32 = 1 << 31;
 const EP_CFGR_EPTYPE: u32 = 1 << 29;
@@ -182,14 +187,26 @@ impl<'d> Driver<'d> {
         &mut self,
         requested: Option<EndpointAddress>,
         direction: Direction,
+        ep_type: EndpointType,
     ) -> Result<EndpointAddress, EndpointAllocError> {
+        // EP1..EP3 support only bulk/interrupt. Isochronous transfers are a
+        // hardware capability of EP4..EP7.
+        let first_usable = if ep_type == EndpointType::Isochronous {
+            4
+        } else {
+            1
+        };
         let addr = if let Some(addr) = requested {
-            if addr.index() == 0 || addr.index() >= EP_COUNT || addr.direction() != direction {
+            if addr.index() < first_usable
+                || addr.index() >= EP_COUNT
+                || addr.direction() != direction
+            {
                 return Err(EndpointAllocError);
             }
             addr
         } else {
-            let Some(index) = (1..EP_COUNT).find(|index| self.allocated_eps & (1 << index) == 0)
+            let Some(index) =
+                (first_usable..EP_COUNT).find(|index| self.allocated_eps & (1 << index) == 0)
             else {
                 return Err(EndpointAllocError);
             };
@@ -238,8 +255,8 @@ impl<'d> embassy_usb_driver::Driver<'d> for Driver<'d> {
         max_packet_size: u16,
         interval: u8,
     ) -> Result<Self::EndpointIn, EndpointAllocError> {
-        validate_packet_size(max_packet_size)?;
-        let addr = self.allocate_address(ep_addr, Direction::In)?;
+        validate_packet_size(ep_type, max_packet_size)?;
+        let addr = self.allocate_address(ep_addr, Direction::In, ep_type)?;
         configure_data_endpoint(addr, ep_type, max_packet_size);
         Ok(Endpoint {
             _phantom: PhantomData,
@@ -260,8 +277,8 @@ impl<'d> embassy_usb_driver::Driver<'d> for Driver<'d> {
         max_packet_size: u16,
         interval: u8,
     ) -> Result<Self::EndpointOut, EndpointAllocError> {
-        validate_packet_size(max_packet_size)?;
-        let addr = self.allocate_address(ep_addr, Direction::Out)?;
+        validate_packet_size(ep_type, max_packet_size)?;
+        let addr = self.allocate_address(ep_addr, Direction::Out, ep_type)?;
         configure_data_endpoint(addr, ep_type, max_packet_size);
         Ok(Endpoint {
             _phantom: PhantomData,
@@ -350,7 +367,7 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
         }
         wait_endpoint_transfer(ep, false).await?;
 
-        let len = read_ep_reg(ep, EP_TCR_OFFSET) as usize;
+        let len = endpoint_received_len(ep);
         if len > data.len() {
             return Err(EndpointError::BufferOverflow);
         }
@@ -581,12 +598,18 @@ pub fn init_usb_with_pins<
     Driver::new(usb, config)
 }
 
-fn validate_packet_size(max_packet_size: u16) -> Result<(), EndpointAllocError> {
-    if max_packet_size == 0 || max_packet_size > MAX_PACKET_SIZE {
-        Err(EndpointAllocError)
-    } else {
-        Ok(())
-    }
+fn validate_packet_size(
+    ep_type: EndpointType,
+    max_packet_size: u16,
+) -> Result<(), EndpointAllocError> {
+    let supported = match ep_type {
+        EndpointType::Control => false,
+        EndpointType::Bulk => matches!(max_packet_size, 8 | 16 | 32 | 64),
+        EndpointType::Interrupt | EndpointType::Isochronous => {
+            max_packet_size != 0 && max_packet_size <= MAX_PACKET_SIZE
+        }
+    };
+    supported.then_some(()).ok_or(EndpointAllocError)
 }
 
 fn reset_software_state() {
@@ -606,15 +629,17 @@ fn reset_software_state() {
 fn initialize_hardware() {
     let usb = usb_regs();
 
-    // Follow the vendor power-up sequence but stay disconnected until
-    // embassy-usb receives PowerDetected and calls Bus::enable().
+    // Reset the controller while the PHY is powered down, then explicitly
+    // leave reset and power-down. DPPUEN remains clear until Bus::enable().
+    // Keeping PDWN/LPMODE set here leaves the PHY disconnected according to
+    // USBCSR, even if the pull-up is enabled later.
     unsafe {
-        usb.csr()
-            .write(|w| w.bits(CSR_DPWKEN | CSR_LPMODE | CSR_PDWN));
-        // Global USB flags are W1C; clear the complete reset-time snapshot.
-        usb.isr().write(|w| w.bits(u32::MAX));
+        usb.csr().write(|w| w.bits(CSR_FRES | CSR_PDWN));
+        usb.csr().write(|w| w.bits(0));
+        // Clear only documented W1C flags. ESOFIF has different write
+        // semantics and is neither enabled nor consumed by this driver.
+        usb.isr().write(|w| w.bits(ISR_W1C_MASK));
     }
-    usb.csr().modify(|_, w| w.dpwken().clear_bit());
 
     configure_control_endpoint(MAX_PACKET_SIZE);
     unsafe {
@@ -633,9 +658,6 @@ fn reset_hardware(control_max_packet_size: u16) {
         usb.csr().write(|w| w.bits(pull_up));
         usb.devar().write(|w| w.bits(0));
     }
-    usb.csr().modify(|_, w| w.sramrstc().set_bit());
-    usb.csr().modify(|_, w| w.sramrstc().clear_bit());
-
     EP0_SETUP.store(false, Ordering::Release);
     for ep in 0..EP_COUNT {
         EP_IN_COMPLETE[ep].store(false, Ordering::Release);
@@ -674,7 +696,7 @@ fn configure_control_endpoint(max_packet_size: u16) {
             | EP_INT_SDER
             | EP_INT_ZLRX,
     );
-    write_ep_reg(0, EP_ISR_OFFSET, 0x0fff);
+    write_ep_reg(0, EP_ISR_OFFSET, EP0_INTERRUPT_MASK);
     set_ep_status(0, EP_CSR_NAKTX, true);
     set_ep_status(0, EP_CSR_NAKRX, true);
     EP_ENABLED[0].store(true, Ordering::Release);
@@ -697,9 +719,9 @@ fn configure_data_endpoint(addr: EndpointAddress, ep_type: EndpointType, max_pac
     write_ep_reg(
         ep,
         EP_IER_OFFSET,
-        EP_INT_ODRX | EP_INT_IDTX | EP_INT_ODOV | EP_INT_UER | EP_INT_ZLRX,
+        EP_INT_ODRX | EP_INT_IDTX | EP_INT_ODOV | EP_INT_UER,
     );
-    write_ep_reg(ep, EP_ISR_OFFSET, 0x0fff);
+    write_ep_reg(ep, EP_ISR_OFFSET, DATA_EP_INTERRUPT_MASK);
     set_ep_status(ep, EP_CSR_NAKTX, true);
     set_ep_status(ep, EP_CSR_NAKRX, true);
 }
@@ -872,8 +894,42 @@ fn set_ep_status(ep: usize, bit: u32, desired: bool) {
     }
 }
 
+fn endpoint_interrupt_mask(ep: usize) -> u32 {
+    if ep == 0 {
+        EP0_INTERRUPT_MASK
+    } else {
+        DATA_EP_INTERRUPT_MASK
+    }
+}
+
+fn endpoint_received_len(ep: usize) -> usize {
+    let count = read_ep_reg(ep, EP_TCR_OFFSET);
+    if ep <= 3 {
+        // EP1..EP3 expose TCNT[8:0].
+        (count & 0x01ff) as usize
+    } else {
+        // EP4..EP7 are configured single-buffered, so TCNT0[9:0] is used.
+        (count & 0x03ff) as usize
+    }
+}
+
+fn set_low_power(enabled: bool) {
+    let usb = usb_regs();
+    unsafe {
+        usb.csr().modify(|r, w| {
+            let low_power = CSR_LPMODE | CSR_PDWN;
+            let value = if enabled {
+                r.bits() | low_power
+            } else {
+                r.bits() & !low_power
+            };
+            w.bits(value)
+        });
+    }
+}
+
 fn handle_endpoint_interrupt(ep: usize) {
-    let raw_flags = read_ep_reg(ep, EP_ISR_OFFSET) & 0x0fff;
+    let raw_flags = read_ep_reg(ep, EP_ISR_OFFSET) & endpoint_interrupt_mask(ep);
     let flags = raw_flags & read_ep_reg(ep, EP_IER_OFFSET);
 
     if ep == 0 && flags & EP_INT_SDRX != 0 && flags & EP_INT_SDER == 0 {
@@ -910,7 +966,7 @@ fn handle_endpoint_interrupt(ep: usize) {
         // transfer, even if hardware reported them in the same IRQ snapshot.
         return;
     }
-    if flags & (EP_INT_ODRX | EP_INT_ZLRX) != 0 {
+    if flags & EP_INT_ODRX != 0 || (ep == 0 && flags & EP_INT_ZLRX != 0) {
         EP_OUT_READY[ep].store(true, Ordering::Release);
         EP_OUT_WAKERS[ep].wake();
     }
@@ -952,6 +1008,7 @@ pub unsafe fn on_usb_interrupt() {
     let endpoint_pending = (pending >> 8) & 0xff;
 
     if pending & ISR_URSTIF != 0 {
+        set_low_power(false);
         BUS_SUSPEND.store(false, Ordering::Release);
         BUS_RESUME.store(false, Ordering::Release);
         BUS_RESET.store(true, Ordering::Release);
@@ -960,7 +1017,7 @@ pub unsafe fn on_usb_interrupt() {
         // Acknowledge them without publishing stale transfer results.
         for ep in 0..EP_COUNT {
             if endpoint_pending & (1 << ep) != 0 {
-                let raw_flags = read_ep_reg(ep, EP_ISR_OFFSET) & 0x0fff;
+                let raw_flags = read_ep_reg(ep, EP_ISR_OFFSET) & endpoint_interrupt_mask(ep);
                 if raw_flags != 0 {
                     write_ep_reg(ep, EP_ISR_OFFSET, raw_flags);
                 }
@@ -971,12 +1028,14 @@ pub unsafe fn on_usb_interrupt() {
         return;
     }
     if pending & ISR_SUSPIF != 0 {
+        set_low_power(true);
         BUS_RESUME.store(false, Ordering::Release);
         BUS_SUSPEND.store(true, Ordering::Release);
         unsafe { usb.isr().write(|w| w.bits(ISR_SUSPIF)) };
         BUS_WAKER.wake();
     }
     if pending & ISR_RSMIF != 0 {
+        set_low_power(false);
         BUS_SUSPEND.store(false, Ordering::Release);
         BUS_RESUME.store(true, Ordering::Release);
         unsafe { usb.isr().write(|w| w.bits(ISR_RSMIF)) };

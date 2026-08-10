@@ -7,8 +7,8 @@
 //! following the Embassy framework patterns used in embassy-stm32.
 //!
 //! ## Supported Chips
-//! - HT32F52342 (64KB Flash, 8KB RAM, 5 Timers)
-//! - HT32F52352 (128KB Flash, 16KB RAM, 6 Timers)
+//! - HT32F52342 (64KB Flash array, 8KB RAM, 7 timer modules)
+//! - HT32F52352 (128KB Flash array, 16KB RAM, 7 timer modules)
 //!
 //! ## Features
 //! - `ht32f52342` - Enable support for HT32F52342
@@ -59,6 +59,14 @@ pub const FLASH_SIZE: usize = 64 * 1024;
 #[cfg(flash_size_128k)]
 pub const FLASH_SIZE: usize = 128 * 1024;
 
+/// User-addressable main Flash size.
+#[cfg(flash_size_64k)]
+pub const USABLE_FLASH_SIZE: usize = FLASH_SIZE;
+/// User-addressable main Flash size. On HT32F52352 the final 512-byte physical
+/// page stores Option Bytes and must not be linked as normal Flash.
+#[cfg(flash_size_128k)]
+pub const USABLE_FLASH_SIZE: usize = FLASH_SIZE - 512;
+
 #[cfg(ram_size_8k)]
 pub const RAM_SIZE: usize = 8 * 1024;
 #[cfg(ram_size_16k)]
@@ -96,8 +104,8 @@ pub mod flash;
 
 // Re-exports for convenience
 pub use embassy_executor;
-pub use embassy_time;
 pub use embassy_sync;
+pub use embassy_time;
 
 /// System configuration
 pub struct Config {
@@ -183,6 +191,3 @@ pub mod prelude {
     pub use crate::time::U32Ext;
     // TODO: Add other exports when modules are completed
 }
-
-#[cfg(feature = "rt")]
-use pac::interrupt;
