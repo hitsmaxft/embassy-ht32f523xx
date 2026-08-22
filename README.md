@@ -7,7 +7,7 @@ with async GPIO/UART/timer support and a USB Full-Speed device driver.
 
 ## 🚀 Project Status
 
-> **Version**: 0.2.0
+> **Version**: 0.2.1
 > **Status**: 🟡 **Active Development**
 > **Hardware Testing**: HT32F52352 on ESK32-30501; see the support matrix below
 
@@ -75,7 +75,7 @@ cargo run --release -p usb-hid-keyboard
 ### Supported MCUs
 - **HT32F52342** - Cortex-M0+, 48MHz, 64KB Flash, 8KB SRAM
 - **HT32F52352** - Cortex-M0+, 48MHz, 128KB Flash, 16KB SRAM (default)
-- Uses the `ht32f523x2` PAC from the Git revision recorded in `Cargo.lock`
+- Uses the crates.io `ht32f523x2` PAC version `0.6.0`
 
 ### Development Boards
 - **ESK32-30501** starter kit (default BSP configuration)
@@ -206,7 +206,7 @@ it does not make RMK matrix or complete HID semantics part of HAL acceptance.
 ## 📄 License
 
 Licensed under either of:
-- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- **MIT License** ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0)
+- [MIT License](https://opensource.org/license/mit)
 
 at your option.

@@ -160,7 +160,7 @@ fn configure_hsi_clock(
         assert_eq!(target_freq.to_hz(), 8_000_000, "direct HSI clock is 8 MHz");
         configure_flash_wait_states(8_000_000);
         // GCCR.SW: PLL=1, HSE=2, HSI=3.
-        ckcu.gccr().modify(|_, w| w.sw().variant(3));
+        ckcu.gccr().modify(|_, w| unsafe { w.sw().bits(3) });
         wait_until(
             || system_clock_is(ckcu, 3),
             "failed to switch system clock to HSI",
@@ -194,7 +194,7 @@ fn configure_hse_clock(
         // Use HSE directly
         assert_eq!(target_freq.to_hz(), hse_freq.to_hz());
         configure_flash_wait_states(hse_freq.to_hz());
-        ckcu.gccr().modify(|_, w| w.sw().variant(2));
+        ckcu.gccr().modify(|_, w| unsafe { w.sw().bits(2) });
         wait_until(
             || system_clock_is(ckcu, 2),
             "failed to switch system clock to HSE",
@@ -241,7 +241,7 @@ fn configure_pll_from_hsi(ckcu: &crate::pac::ckcu::RegisterBlock, target_freq: H
     configure_flash_wait_states(actual_freq);
 
     // Switch to PLL as system clock
-    ckcu.gccr().modify(|_, w| w.sw().variant(1));
+    ckcu.gccr().modify(|_, w| unsafe { w.sw().bits(1) });
     wait_until(
         || system_clock_is(ckcu, 1),
         "failed to switch system clock to PLL",
@@ -286,7 +286,7 @@ fn configure_pll_from_hse(
     configure_flash_wait_states(actual_freq);
 
     // Switch to PLL as system clock
-    ckcu.gccr().modify(|_, w| w.sw().variant(1));
+    ckcu.gccr().modify(|_, w| unsafe { w.sw().bits(1) });
     wait_until(
         || system_clock_is(ckcu, 1),
         "failed to switch system clock to PLL",
@@ -523,7 +523,7 @@ impl Rcc {
             Peripheral::TIM0 => ckcu.apbccr1().modify(|_, w| w.gptm0en().set_bit()),
             Peripheral::TIM1 => ckcu.apbccr1().modify(|_, w| w.gptm1en().set_bit()),
             Peripheral::USB => ckcu.ahbccr().modify(|_, w| w.usben().set_bit()),
-        }
+        };
     }
 
     /// Disable peripheral clock
@@ -541,7 +541,7 @@ impl Rcc {
             Peripheral::TIM0 => ckcu.apbccr1().modify(|_, w| w.gptm0en().clear_bit()),
             Peripheral::TIM1 => ckcu.apbccr1().modify(|_, w| w.gptm1en().clear_bit()),
             Peripheral::USB => ckcu.ahbccr().modify(|_, w| w.usben().clear_bit()),
-        }
+        };
     }
 
     /// Get current clock frequencies

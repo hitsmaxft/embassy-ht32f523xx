@@ -273,7 +273,7 @@ pub extern "C" fn handle_clock_failure() {
     ckcu.gccr().modify(|_, w| w.ckmen().clear_bit());
     // CKSF is W1C. A direct write clears it and disables further CKSIE NMIs.
     unsafe { ckcu.gcir().write(|w| w.bits(1)) };
-    ckcu.gccr().modify(|_, w| w.sw().variant(3));
+    ckcu.gccr().modify(|_, w| unsafe { w.sw().bits(3) });
 
     // CKST, not GCCR.SW, confirms the HSI fallback is active. Bound the wait
     // because this function executes in NMI context.

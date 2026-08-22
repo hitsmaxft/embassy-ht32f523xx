@@ -21,10 +21,10 @@ This project provides a unified Embassy asynchronous runtime and Hardware Abstra
 
 ### Hardware Platform
 - **Target MCU**: HT32F52342/52 (Cortex-M0+ @ 48MHz)
-- **Peripheral Access**: ht32f523x2 v0.5 (SVD-verified register definitions)
+- **Peripheral Access**: ht32f523x2 v0.6.0 (svd2rust-generated register definitions)
 - **Memory**: 64KB/128KB Flash, 8KB/16KB RAM
 - **Architecture**: ARM Cortex-M0+ with 32 peripheral interrupts
-- **Development Boards**: ESK32-30501 with LEDs (PA4-PA6), Button (PB12), UART (PA2/PA3)
+- **Development Boards**: ESK32-30501 with LEDs (PC14/PC15), WAKEUP (PB12), UART (PA2/PA3)
 
 ### Development & Debugging
 - **probe-rs** v0.24+ - Modern debugging and flash programming
@@ -207,7 +207,7 @@ This project provides a unified Embassy asynchronous runtime and Hardware Abstra
 ## External Dependencies
 
 ### Essential Dependencies
-- **HT32F523x2 PAC** (v0.5.0) - Official peripheral access crate from Holtek vendor
+- **HT32F523x2 PAC** (v0.6.0) - Community svd2rust peripheral access crate
 - **Embassy Framework** (v0.9.0+) - Async runtime and peripheral driver foundation
 - **probe-rs** (v0.24+) - Hardware debugging and programming toolchain
 - **defmt** (v0.3) - Specialized embedded logging framework for resource efficiency

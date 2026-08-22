@@ -67,6 +67,13 @@ an initial erase attempt could leave the core in `LockedUp`, while a retry with
 `--disable-double-buffering --verify` succeeded. This is retained as a probe /
 Flash-algorithm robustness issue rather than hidden by the functional result.
 
+The crates.io `0.2.1` candidate replaces the Git-only PAC with registry
+`ht32f523x2 0.6.0`. After adapting to its svd2rust 0.37 API, both MCU feature
+builds and the complete workspace passed. The RMK image was then reflashed and
+the same SWD `A` press/release experiment again produced `e0000201` /
+`a0000201`, the expected EP1 payloads, `IDTX`, and successful endpoint-write
+completion. This is a hardware regression result for the PAC migration.
+
 ## Logic-analyzer gate
 
 The final digital-I/O acceptance experiment SHALL use public HAL APIs. A direct

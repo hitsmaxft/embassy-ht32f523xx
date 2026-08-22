@@ -9,10 +9,6 @@ use embassy_sync::waitqueue::AtomicWaker;
 
 pub use crate::pac::Interrupt;
 
-// Re-export interrupt macro if available
-#[cfg(feature = "rt")]
-pub use crate::pac::interrupt;
-
 /// Default interrupt handler placeholder
 #[unsafe(no_mangle)]
 pub extern "C" fn DefaultHandler() -> ! {
