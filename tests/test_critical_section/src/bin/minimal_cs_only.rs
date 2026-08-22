@@ -3,9 +3,9 @@
 #![no_std]
 #![no_main]
 
+use cortex_m_rt::entry;
 use embassy_ht32f523xx as _; // Import to link critical section symbols
 use {defmt_rtt as _, panic_probe as _};
-use cortex_m_rt::entry;
 
 static mut TEST_VAR: u32 = 0;
 
@@ -14,13 +14,11 @@ fn main() -> ! {
     defmt::info!("Starting absolute minimal critical section test");
 
     // Test without HAL initialization at all
-    critical_section::with(|_| {
-        unsafe { TEST_VAR = 42; }
+    critical_section::with(|_| unsafe {
+        TEST_VAR = 42;
     });
 
-    let val = critical_section::with(|_| {
-        unsafe { TEST_VAR }
-    });
+    let val = critical_section::with(|_| unsafe { TEST_VAR });
 
     defmt::info!("Test result: {}", val);
     assert_eq!(val, 42);
@@ -29,16 +27,18 @@ fn main() -> ! {
 
     // Quick nested test
     critical_section::with(|_| {
-        unsafe { TEST_VAR = 100; }
-        critical_section::with(|_| {
-            unsafe { TEST_VAR = 200; }
+        unsafe {
+            TEST_VAR = 100;
+        }
+        critical_section::with(|_| unsafe {
+            TEST_VAR = 200;
         });
-        unsafe { TEST_VAR = 300; }
+        unsafe {
+            TEST_VAR = 300;
+        }
     });
 
-    let final_val = critical_section::with(|_| {
-        unsafe { TEST_VAR }
-    });
+    let final_val = critical_section::with(|_| unsafe { TEST_VAR });
 
     defmt::info!("Nested test result: {}", final_val);
     assert_eq!(final_val, 300);

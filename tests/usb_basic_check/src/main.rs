@@ -2,13 +2,13 @@
 #![no_main]
 
 use defmt::*;
-use embassy_time::Timer;
-use embassy_ht32f523xx::{self, embassy_time::Duration as HalDuration, pac};
 use embassy_ht32f523xx as hal;
+use embassy_ht32f523xx::{self, embassy_time::Duration as HalDuration, pac};
+use embassy_time::Timer;
 
+use cortex_m_rt::entry;
 use defmt_rtt as _;
 use panic_probe as _;
-use cortex_m_rt::entry;
 
 #[entry]
 fn main() -> ! {
@@ -65,7 +65,10 @@ fn main() -> ! {
 
     // Check interrupt status
     let isr = usb.isr().read();
-    info!("🔌 USB_ISR: Initial interrupt status = {:#010x}", isr.bits());
+    info!(
+        "🔌 USB_ISR: Initial interrupt status = {:#010x}",
+        isr.bits()
+    );
 
     // Clear any pending interrupts
     unsafe {
@@ -90,8 +93,13 @@ fn main() -> ! {
         let current_isr = usb.isr().read();
         let current_csr = usb.csr().read();
 
-        info!("💓 USB Check #{}: ISR={:#010x} CSR={:#010x} DPPUEN={}",
-              count, current_isr.bits(), current_csr.bits(), current_csr.dppuen().bit_is_set());
+        info!(
+            "💓 USB Check #{}: ISR={:#010x} CSR={:#010x} DPPUEN={}",
+            count,
+            current_isr.bits(),
+            current_csr.bits(),
+            current_csr.dppuen().bit_is_set()
+        );
 
         if count == 6 {
             info!("🔍 After 30 seconds: USB device should be visible if initialization worked");

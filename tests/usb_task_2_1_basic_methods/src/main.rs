@@ -3,12 +3,17 @@
 
 use defmt::*;
 use embassy_executor::InterruptExecutor;
-use embassy_ht32f523xx::{self, embassy_time::{Duration, Timer}, pac, usb::{init_usb_with_pins, Config as UsbConfig, UsbPins, UsbDm, UsbDp}};
 use embassy_ht32f523xx as hal;
+use embassy_ht32f523xx::{
+    self,
+    embassy_time::{Duration, Timer},
+    pac,
+    usb::{init_usb_with_pins, Config as UsbConfig, UsbDm, UsbDp, UsbPins},
+};
 
+use cortex_m_rt::entry;
 use defmt_rtt as _;
 use panic_probe as _;
-use cortex_m_rt::entry;
 
 // ** 导入所需的
 use embassy_futures::select::{select, Either};
@@ -78,7 +83,6 @@ async fn usb_basic_methods_test(mut p: embassy_ht32f523xx::Peripherals) {
     // Test that we can create the builder successfully (this tests driver initialization)
     let mut usb = builder.build();
     info!("✅ test passed USB_BUILD_OK - USB device built successfully");
-
 
     // --- Test 2: Test enable() and usb.run() ---
     info!("ENABLE_RUN_TEST start: Running usb.run() for 10 seconds to allow full enumeration...");

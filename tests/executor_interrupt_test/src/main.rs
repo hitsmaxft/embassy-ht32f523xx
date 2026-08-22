@@ -5,15 +5,18 @@
 #![no_main]
 
 use embassy_executor::InterruptExecutor;
-use embassy_ht32f523xx::{self, embassy_time::{Duration, Timer}};
 use embassy_ht32f523xx as hal;
-use hal::pac::Interrupt;
+use embassy_ht32f523xx::{
+    self,
+    embassy_time::{Duration, Timer},
+};
 use hal::Config;
+use hal::pac::Interrupt;
 
+use cortex_m_rt::entry;
 use defmt::info;
 use defmt_rtt as _;
 use panic_probe as _;
-use cortex_m_rt::entry;
 
 // Static interrupt executor
 static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
@@ -59,17 +62,29 @@ async fn main_test_task() {
     for i in 1..=3 {
         info!("📋 TASK_A_ITER_{}: Task A iteration {}", i, i);
         Timer::after(Duration::from_millis(50)).await;
-        info!("📋 TASK_A_ITER_{}_COMPLETE: Task A iteration {} completed", i, i);
+        info!(
+            "📋 TASK_A_ITER_{}_COMPLETE: Task A iteration {} completed",
+            i, i
+        );
 
         info!("🔧 TASK_B_ITER_{}: Task B iteration {}", i, i);
         Timer::after(Duration::from_millis(30)).await;
-        info!("🔧 TASK_B_ITER_{}_COMPLETE: Task B iteration {} completed", i, i);
+        info!(
+            "🔧 TASK_B_ITER_{}_COMPLETE: Task B iteration {} completed",
+            i, i
+        );
 
         info!("⚡ TASK_C_ITER_{}: Task C iteration {}", i, i);
         Timer::after(Duration::from_millis(40)).await;
-        info!("⚡ TASK_C_ITER_{}_COMPLETE: Task C iteration {} completed", i, i);
+        info!(
+            "⚡ TASK_C_ITER_{}_COMPLETE: Task C iteration {} completed",
+            i, i
+        );
 
-        info!("🔄 CONCURRENT_CYCLE_{}_COMPLETE: Concurrent cycle {} finished", i, i);
+        info!(
+            "🔄 CONCURRENT_CYCLE_{}_COMPLETE: Concurrent cycle {} finished",
+            i, i
+        );
     }
 
     // Final validation

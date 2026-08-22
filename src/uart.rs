@@ -23,6 +23,8 @@ pub enum Error {
     Parity,
     /// Buffer full
     BufferFull,
+    /// Configuration is not supported by HT32F52342/52
+    InvalidConfiguration,
 }
 
 impl embedded_hal_nb::serial::Error for Error {
@@ -32,7 +34,7 @@ impl embedded_hal_nb::serial::Error for Error {
             Error::Noise => ErrorKind::Noise,
             Error::Overrun => ErrorKind::Overrun,
             Error::Parity => ErrorKind::Parity,
-            Error::BufferFull => ErrorKind::Other,
+            Error::BufferFull | Error::InvalidConfiguration => ErrorKind::Other,
         }
     }
 }
@@ -117,6 +119,9 @@ pub trait Instance {
 
     /// Enable UART clock
     fn enable_clock();
+
+    /// Peripheral interrupt line
+    fn interrupt() -> crate::pac::Interrupt;
 }
 
 /// UART0 instance
@@ -148,6 +153,10 @@ impl Instance for Usart0 {
     fn enable_clock() {
         let ckcu = unsafe { &*crate::pac::Ckcu::ptr() };
         ckcu.apbccr0().modify(|_, w| w.usr0en().set_bit());
+    }
+
+    fn interrupt() -> crate::pac::Interrupt {
+        crate::pac::Interrupt::USART0
     }
 }
 
@@ -181,6 +190,10 @@ impl Instance for Usart1 {
         let ckcu = unsafe { &*crate::pac::Ckcu::ptr() };
         ckcu.apbccr0().modify(|_, w| w.usr1en().set_bit());
     }
+
+    fn interrupt() -> crate::pac::Interrupt {
+        crate::pac::Interrupt::USART1
+    }
 }
 
 /// UART driver
@@ -191,6 +204,24 @@ pub struct Uart<T: Instance> {
 impl<T: Instance> Uart<T> {
     /// Create a new UART instance
     pub fn new(_uart: T, _tx_pin: impl UartTx<T>, _rx_pin: impl UartRx<T>, config: Config) -> Self {
+        Self::try_new(_uart, _tx_pin, _rx_pin, config)
+            .expect("unsupported HT32 USART configuration")
+    }
+
+    /// Create a UART instance, rejecting modes not implemented by this pin API.
+    pub fn try_new(
+        _uart: T,
+        _tx_pin: impl UartTx<T>,
+        _rx_pin: impl UartRx<T>,
+        config: Config,
+    ) -> Result<Self, Error> {
+        if matches!(config.data_bits, DataBits::Five | DataBits::Six)
+            || config.hardware_flow_control
+            || config.baudrate.to_hz() == 0
+        {
+            return Err(Error::InvalidConfiguration);
+        }
+
         // Enable clock
         T::enable_clock();
 
@@ -204,17 +235,19 @@ impl<T: Instance> Uart<T> {
         let clock_freq = crate::rcc::get_clocks().apb_clk().to_hz();
         let baudrate = config.baudrate.to_hz();
         let brr = clock_freq / baudrate;
+        if !(16..=65_535).contains(&brr) {
+            return Err(Error::InvalidConfiguration);
+        }
         regs.usart_usrdlr().write(|w| unsafe { w.bits(brr) });
 
         // Configure data format in control register
         regs.usart_usrcr().modify(|_, w| {
             // Data bits
             let wls = match config.data_bits {
-                DataBits::Five => 0b00,
-                DataBits::Six => 0b01,
-                DataBits::Seven => 0b10,
-                DataBits::Eight => 0b11,
-                DataBits::Nine => 0b11, // Use 8 bits + parity for 9-bit mode
+                DataBits::Seven => 0b00,
+                DataBits::Eight => 0b01,
+                DataBits::Nine => 0b10,
+                DataBits::Five | DataBits::Six => unreachable!(),
             };
 
             // Stop bits
@@ -243,22 +276,15 @@ impl<T: Instance> Uart<T> {
         });
 
         // Configure FIFOs
-        regs.usart_usrfcr().modify(|_, w| unsafe {
-            w.rxtl()
-                .bits(0b01) // RX trigger level
-                .txtl()
-                .bits(0b00) // TX trigger level
-        });
+        // Match ChibiOS' HT32 USART initialization: reset both FIFOs and
+        // retain the hardware-default trigger levels.
+        regs.usart_usrfcr()
+            .write(|w| w.txr().set_bit().rxr().set_bit());
 
-        // Configure interrupts
-        regs.usart_usrier().modify(|_, w| {
-            w.rxdrie()
-                .set_bit() // RX data ready interrupt
-                .txdeie()
-                .set_bit() // TX data empty interrupt
-                .oeie()
-                .set_bit() // Overrun error interrupt
-        });
+        // Interrupt sources are enabled only while an async operation is
+        // pending. Enabling TXDEIE unconditionally causes a permanent IRQ on
+        // an empty FIFO.
+        regs.usart_usrier().write(|w| unsafe { w.bits(0) });
 
         // Enable UART
         regs.usart_usrcr().modify(|_, w| {
@@ -268,16 +294,24 @@ impl<T: Instance> Uart<T> {
                 .set_bit() // RX enable
         });
 
-        Self {
-            _instance: PhantomData,
+        unsafe {
+            cortex_m::peripheral::NVIC::unpend(T::interrupt());
+            cortex_m::peripheral::NVIC::unmask(T::interrupt());
         }
+
+        Ok(Self {
+            _instance: PhantomData,
+        })
     }
 
     /// Write a single byte (blocking)
     pub fn write_byte(&mut self, byte: u8) -> nb::Result<(), Error> {
         let regs = T::regs();
 
-        if regs.usart_usrsifr().read().txde().bit_is_set() {
+        // TXDE is a programmable threshold indication, not a reliable
+        // "FIFO has room" predicate for a polling producer. TXFS reports the
+        // actual number of occupied entries in the 16-byte FIFO.
+        if regs.usart_usrfcr().read().txfs().bits() < 16 {
             regs.usart_usrdr().write(|w| unsafe { w.bits(byte as u32) });
             Ok(())
         } else {
@@ -292,16 +326,19 @@ impl<T: Instance> Uart<T> {
 
         // Check for errors
         if lsr.oei().bit_is_set() {
+            regs.usart_usrsifr().write(|w| w.oei().set_bit());
             return Err(nb::Error::Other(Error::Overrun));
         }
         if lsr.pei().bit_is_set() {
+            regs.usart_usrsifr().write(|w| w.pei().set_bit());
             return Err(nb::Error::Other(Error::Parity));
         }
         if lsr.fei().bit_is_set() {
+            regs.usart_usrsifr().write(|w| w.fei().set_bit());
             return Err(nb::Error::Other(Error::Framing));
         }
 
-        if lsr.rxdr().bit_is_set() {
+        if lsr.rxdne().bit_is_set() || lsr.rxdr().bit_is_set() {
             Ok(regs.usart_usrdr().read().bits() as u8)
         } else {
             Err(nb::Error::WouldBlock)
@@ -339,7 +376,15 @@ impl<T: Instance> Uart<T> {
 
             match self.write_byte(byte) {
                 Ok(()) => core::task::Poll::Ready(Ok(())),
-                Err(nb::Error::WouldBlock) => core::task::Poll::Pending,
+                Err(nb::Error::WouldBlock) => {
+                    // ChibiOS enables both sources while output is pending.
+                    // Depending on the FIFO timing, either the threshold or
+                    // the final shift completion can be the next event.
+                    T::regs()
+                        .usart_usrier()
+                        .modify(|_, w| w.txdeie().set_bit().txcie().set_bit());
+                    core::task::Poll::Pending
+                }
                 Err(nb::Error::Other(e)) => core::task::Poll::Ready(Err(e)),
             }
         })
@@ -354,7 +399,19 @@ impl<T: Instance> Uart<T> {
 
             match self.read_byte() {
                 Ok(byte) => core::task::Poll::Ready(Ok(byte)),
-                Err(nb::Error::WouldBlock) => core::task::Poll::Pending,
+                Err(nb::Error::WouldBlock) => {
+                    T::regs().usart_usrier().modify(|_, w| {
+                        w.rxdrie()
+                            .set_bit()
+                            .oeie()
+                            .set_bit()
+                            .peie()
+                            .set_bit()
+                            .feie()
+                            .set_bit()
+                    });
+                    core::task::Poll::Pending
+                }
                 Err(nb::Error::Other(e)) => core::task::Poll::Ready(Err(e)),
             }
         })
@@ -369,13 +426,48 @@ impl<T: Instance> Uart<T> {
         core::future::poll_fn(|cx| {
             waker.register(cx.waker());
 
-            if regs.usart_usrsifr().read().txde().bit_is_set() {
+            if regs.usart_usrsifr().read().txc().bit_is_set() {
                 core::task::Poll::Ready(Ok(()))
             } else {
+                regs.usart_usrier().modify(|_, w| w.txcie().set_bit());
                 core::task::Poll::Pending
             }
         })
         .await
+    }
+}
+
+/// Service one USART interrupt and wake pending async operations.
+pub(crate) fn on_interrupt<T: Instance>() {
+    let regs = T::regs();
+    let status = regs.usart_usrsifr().read();
+    let enabled = regs.usart_usrier().read();
+
+    if (status.txde().bit_is_set() && enabled.txdeie().bit_is_set())
+        || (status.txc().bit_is_set() && enabled.txcie().bit_is_set())
+    {
+        regs.usart_usrier()
+            .modify(|_, w| w.txdeie().clear_bit().txcie().clear_bit());
+        T::tx_waker().wake();
+    }
+
+    let receive_ready = (status.rxdne().bit_is_set() || status.rxdr().bit_is_set())
+        && enabled.rxdrie().bit_is_set();
+    let receive_error = (status.oei().bit_is_set() && enabled.oeie().bit_is_set())
+        || (status.pei().bit_is_set() && enabled.peie().bit_is_set())
+        || (status.fei().bit_is_set() && enabled.feie().bit_is_set());
+    if receive_ready || receive_error {
+        regs.usart_usrier().modify(|_, w| {
+            w.rxdrie()
+                .clear_bit()
+                .oeie()
+                .clear_bit()
+                .peie()
+                .clear_bit()
+                .feie()
+                .clear_bit()
+        });
+        T::rx_waker().wake();
     }
 }
 
@@ -391,7 +483,7 @@ impl<T: Instance> Write<u8> for Uart<T> {
 
     fn flush(&mut self) -> nb::Result<(), Self::Error> {
         let regs = T::regs();
-        if regs.usart_usrsifr().read().txde().bit_is_set() {
+        if regs.usart_usrsifr().read().txc().bit_is_set() {
             Ok(())
         } else {
             Err(nb::Error::WouldBlock)

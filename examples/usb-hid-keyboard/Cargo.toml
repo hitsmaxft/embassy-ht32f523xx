@@ -28,4 +28,4 @@ embassy-futures = { workspace = true }
 static_cell = "2"
 portable-atomic = { version = "1.0", features = ["critical-section"] }
 critical-section = { workspace = true }
-usbd-hid = "0.8"
+usbd-hid = { workspace = true }

@@ -1,21 +1,73 @@
-//! Timer driver for HT32 GPTM (General Purpose Timer Module)
+//! Asynchronous timers backed by HT32 Basic Function Timers (BFTM).
+//!
+//! This follows the ChibiOS HT32 GPT backend: BFTM runs directly from the AHB
+//! clock, `CMP` contains the raw interval, `SR.MIF` is cleared by writing zero,
+//! and one-shot operation uses `CR = CEN | OSM | MIEN`.
 
-use crate::pac::Gptm1;
-
-use embassy_time::Duration;
-use embassy_sync::waitqueue::AtomicWaker;
+use core::cell::Cell;
 use core::marker::PhantomData;
+use core::task::Poll;
 
-/// Timer instance trait
-pub trait Instance {
-    /// Get the timer register block
-    fn regs() -> &'static crate::pac::gptm0::RegisterBlock;
+use critical_section::Mutex;
+use embassy_sync::waitqueue::AtomicWaker;
+use embassy_time::Duration;
 
-    /// Get the timer interrupt waker
-    fn waker() -> &'static AtomicWaker;
+use crate::pac::{Bftm0, Bftm1, Interrupt};
+
+const CR_MIEN: u32 = 1 << 0;
+const CR_OSM: u32 = 1 << 1;
+const CR_CEN: u32 = 1 << 2;
+const SR_MIF: u32 = 1 << 0;
+
+#[doc(hidden)]
+pub struct TimerSignal {
+    fired: Mutex<Cell<bool>>,
+    waker: AtomicWaker,
 }
 
-/// Timer 0
+impl TimerSignal {
+    const fn new() -> Self {
+        Self {
+            fired: Mutex::new(Cell::new(false)),
+            waker: AtomicWaker::new(),
+        }
+    }
+
+    fn clear(&self) {
+        critical_section::with(|cs| self.fired.borrow(cs).set(false));
+    }
+
+    fn fire(&self) {
+        critical_section::with(|cs| self.fired.borrow(cs).set(true));
+        self.waker.wake();
+    }
+
+    fn take(&self) -> bool {
+        critical_section::with(|cs| {
+            let fired = self.fired.borrow(cs);
+            let value = fired.get();
+            fired.set(false);
+            value
+        })
+    }
+}
+
+static BFTM0_SIGNAL: TimerSignal = TimerSignal::new();
+static BFTM1_SIGNAL: TimerSignal = TimerSignal::new();
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// BFTM instance used by [`Timer`].
+pub trait Instance: sealed::Sealed {
+    fn regs() -> &'static crate::pac::bftm0::RegisterBlock;
+    fn enable_clock();
+    fn interrupt() -> Interrupt;
+    fn signal() -> &'static TimerSignal;
+}
+
+/// Ownership token for BFTM0.
 pub struct Timer0 {
     _private: (),
 }
@@ -26,18 +78,28 @@ impl Timer0 {
     }
 }
 
+impl sealed::Sealed for Timer0 {}
+
 impl Instance for Timer0 {
-    fn regs() -> &'static crate::pac::gptm0::RegisterBlock {
-        unsafe { &*crate::pac::Gptm0::ptr() }
+    fn regs() -> &'static crate::pac::bftm0::RegisterBlock {
+        unsafe { &*Bftm0::ptr() }
     }
 
-    fn waker() -> &'static AtomicWaker {
-        static WAKER: AtomicWaker = AtomicWaker::new();
-        &WAKER
+    fn enable_clock() {
+        let ckcu = unsafe { &*crate::pac::Ckcu::ptr() };
+        ckcu.apbccr1().modify(|_, w| w.bftm0en().set_bit());
+    }
+
+    fn interrupt() -> Interrupt {
+        Interrupt::BFTM0
+    }
+
+    fn signal() -> &'static TimerSignal {
+        &BFTM0_SIGNAL
     }
 }
 
-/// Timer 1
+/// Ownership token for BFTM1.
 pub struct Timer1 {
     _private: (),
 }
@@ -48,167 +110,136 @@ impl Timer1 {
     }
 }
 
+impl sealed::Sealed for Timer1 {}
+
 impl Instance for Timer1 {
-    fn regs() -> &'static crate::pac::gptm0::RegisterBlock {
-        unsafe { &*Gptm1::ptr() }
+    fn regs() -> &'static crate::pac::bftm0::RegisterBlock {
+        unsafe { &*Bftm1::ptr() }
     }
 
-    fn waker() -> &'static AtomicWaker {
-        static WAKER: AtomicWaker = AtomicWaker::new();
-        &WAKER
+    fn enable_clock() {
+        let ckcu = unsafe { &*crate::pac::Ckcu::ptr() };
+        ckcu.apbccr1().modify(|_, w| w.bftm1en().set_bit());
+    }
+
+    fn interrupt() -> Interrupt {
+        Interrupt::BFTM1
+    }
+
+    fn signal() -> &'static TimerSignal {
+        &BFTM1_SIGNAL
     }
 }
 
-// Note: HT32F523x2 only has GPTM0 and GPTM1 available
-// Additional timer instances would be added here for other HT32 variants
-
-/// Generic timer driver
+/// One-shot asynchronous BFTM timer.
 pub struct Timer<T: Instance> {
     _instance: PhantomData<T>,
 }
 
 impl<T: Instance> Timer<T> {
-    /// Create a new timer instance
-    pub fn new() -> Self {
-        // Initialize the timer hardware
+    /// Create a timer from its unique peripheral token.
+    pub fn new(_instance: T) -> Self {
+        T::enable_clock();
         let regs = T::regs();
-
-        // Basic timer setup
-        regs.gptm_ctr().modify(|_, w| w.tme().clear_bit()); // Disable timer
-        regs.gptm_mdcfr().modify(|_, w| w.tse().bit(true)); // Up counting mode
+        regs.cr().write(|w| unsafe { w.bits(0) });
+        regs.sr().write(|w| unsafe { w.bits(0) });
+        T::signal().clear();
+        unsafe { cortex_m::peripheral::NVIC::unmask(T::interrupt()) };
 
         Self {
             _instance: PhantomData,
         }
     }
 
-    /// Start a one-shot timer for the given duration
+    /// Sleep for at least `duration`.
+    ///
+    /// BFTM has a 32-bit compare at the undivided AHB clock. Long durations
+    /// are split into multiple one-shot intervals.
     pub async fn sleep(&mut self, duration: Duration) {
-        let _regs = T::regs();
-        let _waker = T::waker();
+        let frequency = u64::from(crate::rcc::get_clocks().ahb_clk().to_hz());
+        let time_ticks = duration.as_ticks();
+        let timer_ticks = time_ticks
+            .saturating_mul(frequency)
+            .saturating_add(embassy_time::TICK_HZ - 1)
+            / embassy_time::TICK_HZ;
 
-        // Calculate timer parameters based on system clock
-        let clock_freq = crate::rcc::get_clocks().apb_clk().to_hz();
-        let ticks = (duration.as_micros() as u64 * clock_freq as u64) / 1_000_000;
-
-        if ticks > u32::MAX as u64 {
-            // Duration too long, split into multiple waits
-            // For simplicity, just wait for maximum duration
-            self.wait_ticks(u32::MAX).await;
-            return;
+        let mut remaining = timer_ticks;
+        while remaining != 0 {
+            let chunk = remaining.min(u64::from(u32::MAX)) as u32;
+            self.wait_ticks(chunk).await;
+            remaining -= u64::from(chunk);
         }
-
-        self.wait_ticks(ticks as u32).await;
     }
 
     async fn wait_ticks(&mut self, ticks: u32) {
+        if ticks == 0 {
+            return;
+        }
+
         let regs = T::regs();
-        let waker = T::waker();
+        let signal = T::signal();
+        let mut started = false;
+        let _stop_on_cancel = StopGuard::<T>(PhantomData);
 
-        // Set up timer for one-shot operation
-        regs.gptm_ctr().modify(|_, w| w.tme().clear_bit()); // Disable timer
-        regs.gptm_cntr().reset(); // Reset counter
-        regs.gptm_crr().write(|w| unsafe { w.bits(ticks) }); // Set compare value
-
-        // Enable compare interrupt
-        regs.gptm_evgr().write(|w| w.ch0ccg().set_bit()); // Clear interrupt flag
-        regs.gptm_dictr().modify(|_, w| w.ch0ccie().set_bit()); // Enable interrupt
-
-        // Start timer
-        regs.gptm_ctr().modify(|_, w| w.tme().set_bit());
-
-        // Wait for interrupt
         core::future::poll_fn(|cx| {
-            waker.register(cx.waker());
+            signal.waker.register(cx.waker());
 
-            // Check if timer has elapsed
-            if regs.gptm_intsr().read().ch0ccif().bit_is_set() {
-                // Clear interrupt flag
-                regs.gptm_evgr().write(|w| w.ch0ccg().set_bit());
-                // Disable timer
-                regs.gptm_ctr().modify(|_, w| w.tme().clear_bit());
-                core::task::Poll::Ready(())
-            } else {
-                core::task::Poll::Pending
+            if !started {
+                signal.clear();
+                regs.cr().write(|w| unsafe { w.bits(0) });
+                regs.sr().write(|w| unsafe { w.bits(0) });
+                regs.cntr().write(|w| unsafe { w.bits(0) });
+                regs.cmpr().write(|w| unsafe { w.bits(ticks) });
+                regs.cr()
+                    .write(|w| unsafe { w.bits(CR_CEN | CR_OSM | CR_MIEN) });
+                started = true;
             }
-        }).await;
+
+            if signal.take() || regs.sr().read().bits() & SR_MIF != 0 {
+                stop::<T>();
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
     }
 
-    /// Get the current timer counter value
-    pub fn get_counter(&self) -> u32 {
-        T::regs().gptm_cntr().read().bits()
+    /// Read the raw BFTM counter, in AHB clock cycles.
+    pub fn counter(&self) -> u32 {
+        T::regs().cntr().read().bits()
     }
 
-    /// Set the timer prescaler
-    pub fn set_prescaler(&mut self, prescaler: u16) {
-        T::regs().gptm_pscr().write(|w| unsafe { w.bits(prescaler as u32) });
-    }
-
-    /// Set the timer frequency
-    pub fn set_frequency(&mut self, freq: crate::time::Hertz) {
-        let clock_freq = crate::rcc::get_clocks().apb_clk().to_hz();
-        let prescaler = (clock_freq / freq.to_hz()) - 1;
-        self.set_prescaler(prescaler as u16);
+    /// Stop a running interval.
+    pub fn stop(&mut self) {
+        stop::<T>();
+        T::signal().clear();
     }
 }
 
-// Interrupt handlers would go here
-// These need to be implemented for each timer instance
+struct StopGuard<T: Instance>(PhantomData<T>);
 
-/// Initialize embassy-time using a hardware timer
-pub fn init_embassy_time() {
-    // This would typically use SysTick or a dedicated timer for embassy-time
-    // For now, this is a placeholder
+impl<T: Instance> Drop for StopGuard<T> {
+    fn drop(&mut self) {
+        stop::<T>();
+    }
 }
 
-/// PWM channel configuration
-pub enum Channel {
-    Ch0,
-    Ch1,
-    Ch2,
-    Ch3,
+fn stop<T: Instance>() {
+    let regs = T::regs();
+    regs.cr().write(|w| unsafe { w.bits(0) });
+    // BFTM SR.MIF is write-zero-to-clear, matching Holtek FWLib and ChibiOS.
+    regs.sr().write(|w| unsafe { w.bits(0) });
+    cortex_m::asm::dsb();
 }
 
-/// PWM driver
-pub struct Pwm<T: Instance> {
-    _instance: PhantomData<T>,
-}
-
-impl<T: Instance> Pwm<T> {
-    /// Create a new PWM instance
-    pub fn new() -> Self {
-        let regs = T::regs();
-
-        // Configure timer for PWM mode
-        regs.gptm_mdcfr().modify(|_, w| w.tse().bit(true)); // Up counting
-
-        Self {
-            _instance: PhantomData,
-        }
+/// Handle a BFTM interrupt.
+pub(crate) fn on_interrupt<T: Instance>() {
+    let regs = T::regs();
+    if regs.sr().read().bits() & SR_MIF == 0 {
+        return;
     }
 
-    /// Set PWM duty cycle for a channel
-    pub fn set_duty_cycle(&mut self, channel: Channel, duty: u16, max: u16) {
-        let regs = T::regs();
-        let duty_ticks = (duty as u32 * regs.gptm_crr().read().bits()) / max as u32;
-
-        match channel {
-            Channel::Ch0 => regs.gptm_ch0ccr().write(|w| unsafe { w.bits(duty_ticks) }),
-            Channel::Ch1 => regs.gptm_ch1ccr().write(|w| unsafe { w.bits(duty_ticks) }),
-            Channel::Ch2 => regs.gptm_ch2ccr().write(|w| unsafe { w.bits(duty_ticks) }),
-            Channel::Ch3 => regs.gptm_ch3ccr().write(|w| unsafe { w.bits(duty_ticks) }),
-        }
-    }
-
-    /// Enable PWM output for a channel
-    pub fn enable_channel(&mut self, channel: Channel) {
-        let regs = T::regs();
-
-        match channel {
-            Channel::Ch0 => regs.gptm_chctr().modify(|_, w| w.ch0e().set_bit()),
-            Channel::Ch1 => regs.gptm_chctr().modify(|_, w| w.ch1e().set_bit()),
-            Channel::Ch2 => regs.gptm_chctr().modify(|_, w| w.ch2e().set_bit()),
-            Channel::Ch3 => regs.gptm_chctr().modify(|_, w| w.ch3e().set_bit()),
-        }
-    }
+    stop::<T>();
+    T::signal().fire();
 }

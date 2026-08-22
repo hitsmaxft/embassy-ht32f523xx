@@ -6,17 +6,17 @@
 
 use embassy_executor::InterruptExecutor;
 use embassy_ht32f523xx as hal;
-use embassy_ht32f523xx::gpio::{Pin, mode, AnyPin, Level, Speed};
-use hal::pac::Interrupt;
+use embassy_ht32f523xx::gpio::{AnyPin, Level, Pin, Speed, mode};
 use hal::Config;
+use hal::pac::Interrupt;
 
-use embedded_hal::digital::OutputPin;
-use embedded_hal_async::digital::Wait;
-use embassy_futures::join;
+use cortex_m_rt::entry;
 use defmt::info;
 use defmt_rtt as _;
+use embassy_futures::join;
+use embedded_hal::digital::OutputPin;
+use embedded_hal_async::digital::Wait;
 use panic_probe as _;
-use cortex_m_rt::entry;
 
 // Static interrupt executor
 static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
@@ -89,18 +89,24 @@ async fn test_gpio_interrupt_wait() {
 
     let wait_result = hal::embassy_time::with_timeout(
         hal::embassy_time::Duration::from_secs(1),
-        any_pin.wait_for_any_edge()
-    ).await;
+        any_pin.wait_for_any_edge(),
+    )
+    .await;
 
     match wait_result {
         Ok(Ok(())) => {
             info!("✅ INTERRUPT_RECEIVED: GPIO interrupt detected successfully!");
         }
         Ok(Err(e)) => {
-            info!("⚠️ GPIO_ERROR: GPIO operation failed: {:?}", defmt::Debug2Format(&e));
+            info!(
+                "⚠️ GPIO_ERROR: GPIO operation failed: {:?}",
+                defmt::Debug2Format(&e)
+            );
         }
         Err(_) => {
-            info!("⏰ TIMEOUT: No GPIO interrupt detected within 1 second (expected in test environment)");
+            info!(
+                "⏰ TIMEOUT: No GPIO interrupt detected within 1 second (expected in test environment)"
+            );
         }
     }
 
@@ -123,15 +129,17 @@ async fn test_concurrent_gpio() {
     let wait_a = async {
         hal::embassy_time::with_timeout(
             hal::embassy_time::Duration::from_millis(500),
-            any_pin_a.wait_for_rising_edge()
-        ).await
+            any_pin_a.wait_for_rising_edge(),
+        )
+        .await
     };
 
     let wait_b = async {
         hal::embassy_time::with_timeout(
             hal::embassy_time::Duration::from_millis(500),
-            any_pin_b.wait_for_falling_edge()
-        ).await
+            any_pin_b.wait_for_falling_edge(),
+        )
+        .await
     };
 
     // Run both waits concurrently

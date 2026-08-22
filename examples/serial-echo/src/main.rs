@@ -1,13 +1,13 @@
 #![no_std]
 #![no_main]
 
+use cortex_m_rt::entry;
 use defmt::*;
 use embassy_executor::InterruptExecutor;
-use embassy_ht32f523xx::{self, pac::Interrupt, Config};
+use embassy_ht32f523xx::{self, Config, pac::Interrupt};
 use embassy_time::{Duration, Timer};
 use ht32_bsp::Board;
 use panic_probe as _;
-use cortex_m_rt::entry;
 
 // Static interrupt executor
 static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
@@ -55,7 +55,9 @@ async fn serial_echo_task() {
 
     info!("📋 SERIAL_TASK_STATUS: Embassy HT32 Serial Echo initialized");
     info!("⚠️  SERIAL_TASK_NOTE: UART async functionality is not yet fully implemented");
-    info!("🎯 SERIAL_TASK_PURPOSE: This example demonstrates interrupt executor with embassy timers");
+    info!(
+        "🎯 SERIAL_TASK_PURPOSE: This example demonstrates interrupt executor with embassy timers"
+    );
 
     // Future UART implementation structure (commented out):
     /*
@@ -109,20 +111,31 @@ async fn serial_echo_task() {
 
         // First timer - demonstrates Timer::await integration
         Timer::after(Duration::from_millis(1000)).await;
-        info!("⏰ SERIAL_TASK_TIMER1_OK: First 1s timer completed in cycle {}", status_count);
+        info!(
+            "⏰ SERIAL_TASK_TIMER1_OK: First 1s timer completed in cycle {}",
+            status_count
+        );
 
         // Second timer - validates multiple timer operations
         Timer::after(Duration::from_millis(1000)).await;
-        info!("⏰ SERIAL_TASK_TIMER2_OK: Second 1s timer completed in cycle {}", status_count);
+        info!(
+            "⏰ SERIAL_TASK_TIMER2_OK: Second 1s timer completed in cycle {}",
+            status_count
+        );
 
         // Status message every cycle
-        info!("🔄 SERIAL_TASK_CYCLE_{}_COMPLETE: Status cycle {} finished - UART pins ready for future implementation",
-              status_count, status_count);
+        info!(
+            "🔄 SERIAL_TASK_CYCLE_{}_COMPLETE: Status cycle {} finished - UART pins ready for future implementation",
+            status_count, status_count
+        );
 
         // Every 5 cycles, provide additional system information
         if status_count % 5 == 0 {
-            info!("🎯 SERIAL_TASK_MILESTONE: Completed {} status cycles ({} seconds total) - Embassy timers working perfectly!",
-                  status_count, status_count * 2);
+            info!(
+                "🎯 SERIAL_TASK_MILESTONE: Completed {} status cycles ({} seconds total) - Embassy timers working perfectly!",
+                status_count,
+                status_count * 2
+            );
         }
     }
 }

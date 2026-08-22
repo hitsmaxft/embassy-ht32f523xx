@@ -3,22 +3,20 @@
 #![no_std]
 #![no_main]
 
-use panic_probe as _;
-use embassy_ht32f523xx as _;
 use cortex_m_rt::entry;
+use embassy_ht32f523xx as _;
+use panic_probe as _;
 
 static mut TEST_VAR: u32 = 0;
 
 #[entry]
 fn main() -> ! {
     // Test critical sections without any defmt logging
-    critical_section::with(|_| {
-        unsafe { TEST_VAR = 42; }
+    critical_section::with(|_| unsafe {
+        TEST_VAR = 42;
     });
 
-    let val = critical_section::with(|_| {
-        unsafe { TEST_VAR }
-    });
+    let val = critical_section::with(|_| unsafe { TEST_VAR });
 
     // Use the value to prevent optimization
     if val != 42 {
@@ -30,16 +28,18 @@ fn main() -> ! {
 
     // Test nesting
     critical_section::with(|_| {
-        unsafe { TEST_VAR = 100; }
-        critical_section::with(|_| {
-            unsafe { TEST_VAR = 200; }
+        unsafe {
+            TEST_VAR = 100;
+        }
+        critical_section::with(|_| unsafe {
+            TEST_VAR = 200;
         });
-        unsafe { TEST_VAR = 300; }
+        unsafe {
+            TEST_VAR = 300;
+        }
     });
 
-    let final_val = critical_section::with(|_| {
-        unsafe { TEST_VAR }
-    });
+    let final_val = critical_section::with(|_| unsafe { TEST_VAR });
 
     if final_val != 300 {
         loop {

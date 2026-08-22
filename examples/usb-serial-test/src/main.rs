@@ -63,9 +63,9 @@ async fn usb_serial_test_task(p: embassy_ht32f523xx::Peripherals) {
 
     // Create embassy-usb config for CDC-ACM serial device
     let mut config = embassy_usb::Config::new(0x16c0, 0x05dc); // Generic test VID/PID
-    config.manufacturer = Some("Embassy-ht32");
-    config.product = Some("USB Serial Test");
-    config.serial_number = Some("SERIAL001");
+    config.manufacturer = Some("BHE Embassy HT32");
+    config.product = Some("BHE HT32F52352 CDC ECHO");
+    config.serial_number = Some("BHE-HT32F52352-CDC-0001");
     config.max_power = 100;
     config.supports_remote_wakeup = false;
 

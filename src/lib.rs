@@ -3,8 +3,8 @@
 
 //! Embassy async runtime and Hardware Abstraction Layer for HT32F523xx microcontrollers
 //!
-//! This crate provides both synchronous and asynchronous drivers for HT32F523xx series MCUs,
-//! following the Embassy framework patterns used in embassy-stm32.
+//! This crate provides selected synchronous and asynchronous drivers for
+//! HT32F523xx series MCUs, following Embassy ownership and async patterns.
 //!
 //! ## Supported Chips
 //! - HT32F52342 (64KB Flash array, 8KB RAM, 7 timer modules)
@@ -30,15 +30,17 @@
 //! #[embassy_executor::main]
 //! async fn main(_spawner: Spawner) {
 //!     let p = embassy_ht32f523xx::init(Config::default());
-//!
-//!     let mut led = gpio::Output::new(p.PA0, gpio::Level::Low, gpio::Speed::Low);
+//!     let mut gpioa = p.gpioa;
+//!     let mut led = gpioa
+//!         .pa0()
+//!         .into_push_pull_output(gpio::Level::Low, gpio::Speed::Low);
 //!
 //!     loop {
 //!         led.set_high();
-//!     defmt::info!("LED on");
+//!         defmt::info!("LED on");
 //!         Timer::after_millis(500).await;
 //!         led.set_low();
-//!     defmt::info!("LED off");
+//!         defmt::info!("LED off");
 //!         Timer::after_millis(500).await;
 //!     }
 //! }

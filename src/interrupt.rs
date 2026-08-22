@@ -116,6 +116,8 @@ pub fn init() {
     unsafe {
         cortex_m::peripheral::NVIC::unmask(Interrupt::GPTM0);
         cortex_m::peripheral::NVIC::unmask(Interrupt::GPTM1);
+        cortex_m::peripheral::NVIC::unmask(Interrupt::BFTM0);
+        cortex_m::peripheral::NVIC::unmask(Interrupt::BFTM1);
         cortex_m::peripheral::NVIC::unmask(Interrupt::USB);
         cortex_m::peripheral::NVIC::unmask(Interrupt::USART0);
         cortex_m::peripheral::NVIC::unmask(Interrupt::USART1);
@@ -132,44 +134,47 @@ pub unsafe extern "C" fn GPTM0() {
     crate::time_driver::get_driver().on_interrupt();
 }
 
+#[cfg(feature = "rt")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn BFTM0() {
+    crate::timer::on_interrupt::<crate::timer::Timer0>();
+}
+
+#[cfg(feature = "rt")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn BFTM1() {
+    crate::timer::on_interrupt::<crate::timer::Timer1>();
+}
+
 // EXTI interrupt handlers for GPIO async operations
 #[cfg(feature = "rt")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn EXTI0_1() {
-    let exti = unsafe { &*crate::pac::Exti::ptr() };
-    let pending = exti.edgeflgr().read().bits();
-
-    // Clear pending interrupts
-    exti.edgeflgr().write(|w| unsafe { w.bits(pending) });
-
-    // Wake tasks waiting on EXTI0_1
-    EXTI0_1_WAKER.wake();
+    crate::exti::on_interrupt(0x0003);
 }
 
 #[cfg(feature = "rt")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn EXTI2_3() {
-    let exti = unsafe { &*crate::pac::Exti::ptr() };
-    let pending = exti.edgeflgr().read().bits();
-
-    // Clear pending interrupts
-    exti.edgeflgr().write(|w| unsafe { w.bits(pending) });
-
-    // Wake tasks waiting on EXTI2_3
-    EXTI2_3_WAKER.wake();
+    crate::exti::on_interrupt(0x000c);
 }
 
 #[cfg(feature = "rt")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn EXTI4_15() {
-    let exti = unsafe { &*crate::pac::Exti::ptr() };
-    let pending = exti.edgeflgr().read().bits();
+    crate::exti::on_interrupt(0xfff0);
+}
 
-    // Clear pending interrupts
-    exti.edgeflgr().write(|w| unsafe { w.bits(pending) });
+#[cfg(feature = "rt")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn USART0() {
+    crate::uart::on_interrupt::<crate::uart::Usart0>();
+}
 
-    // Wake tasks waiting on EXTI4_15
-    EXTI4_15_WAKER.wake();
+#[cfg(feature = "rt")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn USART1() {
+    crate::uart::on_interrupt::<crate::uart::Usart1>();
 }
 
 #[cfg(all(feature = "rt", feature = "usb"))]

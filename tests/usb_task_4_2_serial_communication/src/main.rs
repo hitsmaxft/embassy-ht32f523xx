@@ -3,15 +3,20 @@
 
 use defmt::*;
 use embassy_executor::InterruptExecutor;
+use embassy_ht32f523xx as hal;
+use embassy_ht32f523xx::{
+    self,
+    embassy_time::Duration as HalDuration,
+    pac,
+    usb::{init_usb_with_pins, Config as UsbConfig, UsbDm, UsbDp, UsbPins},
+};
 use embassy_time::Timer;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::Builder;
-use embassy_ht32f523xx::{self, pac, embassy_time::Duration as HalDuration, usb::{init_usb_with_pins, Config as UsbConfig, UsbPins, UsbDm, UsbDp}};
-use embassy_ht32f523xx as hal;
 
+use cortex_m_rt::entry;
 use defmt_rtt as _;
 use panic_probe as _;
-use cortex_m_rt::entry;
 use static_cell::StaticCell;
 
 // Static interrupt executor - prevents timer conflicts with USB

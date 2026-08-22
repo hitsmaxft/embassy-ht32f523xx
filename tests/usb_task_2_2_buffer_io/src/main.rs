@@ -3,17 +3,22 @@
 
 use defmt::*;
 use embassy_executor::InterruptExecutor;
-use embassy_ht32f523xx::{self, embassy_time::{Duration, Timer}, pac, usb::{Config as UsbConfig, Driver, UsbDm, UsbDp, UsbPins, init_usb_with_pins}};
 use embassy_ht32f523xx as hal;
+use embassy_ht32f523xx::{
+    self,
+    embassy_time::{Duration, Timer},
+    pac,
+    usb::{init_usb_with_pins, Config as UsbConfig, Driver, UsbDm, UsbDp, UsbPins},
+};
 
+use cortex_m_rt::entry;
 use defmt_rtt as _;
 use panic_probe as _;
-use cortex_m_rt::entry;
 
-use embassy_futures::select::{select, Either};
 use embassy_futures::join::join;
-use embassy_usb::Builder;
+use embassy_futures::select::{select, Either};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
+use embassy_usb::Builder;
 use static_cell::StaticCell;
 
 static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
@@ -31,7 +36,7 @@ fn main() -> ! {
     info!("📝 FIRMWARE LOG: This test will create 'EBUSB_220' USB device");
     info!("🔍 HOST VERIFY: Use 'cyme --list' to confirm 'EBUSB_220' appears");
     info!("🔌 ASSUMPTION: Device is PLUGGED INTO a host (macOS or Linux)");
-    
+
     let p = hal::init(hal::Config::default());
     let spawner = EXECUTOR.start(pac::Interrupt::LVD_BOD);
     spawner.spawn(usb_buffer_io_test(p)).unwrap();
@@ -70,7 +75,7 @@ async fn usb_buffer_io_test(mut p: embassy_ht32f523xx::Peripherals) {
 
     // --- 1. Instantiate Class and Trigger alloc_endpoint_in ---
     info!("CDC_CLASS_TEST start: Requesting BULK endpoints...");
-    // This call triggers alloc_endpoint_in for the IN endpoint, and alloc_endpoint_out 
+    // This call triggers alloc_endpoint_in for the IN endpoint, and alloc_endpoint_out
     // for the OUT endpoint, via the Builder's dispatch logic.
     let class = CdcAcmClass::new(&mut builder, unsafe { CDC_STATE.init(State::new()) }, 64);
     let (mut sender, _receiver) = class.split();
@@ -83,11 +88,11 @@ async fn usb_buffer_io_test(mut p: embassy_ht32f523xx::Peripherals) {
 
     // The primary USB run loop
     let usb_fut = usb.run();
-    
+
     // The sequence of I/O checks
     let write_fut = async {
         let total_timeout = Timer::after(Duration::from_secs(10));
-        
+
         // Wait for the host to open the port (which macOS/Linux does automatically)
         info!("   (write_test): Awaiting host port connection...");
         match select(sender.wait_connection(), total_timeout).await {
@@ -103,17 +108,17 @@ async fn usb_buffer_io_test(mut p: embassy_ht32f523xx::Peripherals) {
         // Test write_endpoint_data
         info!("   (write_test): Attempting write_packet(BULK IN)...");
         let write_fut = sender.write_packet(b"Hello from probe!");
-        
+
         // Reset timeout for the write operation
         let write_timeout = Timer::after(Duration::from_secs(5));
 
         match select(write_fut, write_timeout).await {
             Either::First(Ok(_)) => {
-                 info!("✅   (write_test): write_packet() completed successfully!");
-                 info!("✅   test passed WRITE_ENDPOINT_OK - driver.write_endpoint_data() is VERIFIED!");
+                info!("✅   (write_test): write_packet() completed successfully!");
+                info!("✅   test passed WRITE_ENDPOINT_OK - driver.write_endpoint_data() is VERIFIED!");
             }
             Either::First(Err(_e)) => {
-                 info!("❌   (write_test): TEST FAILED. write_packet() returned error.");
+                info!("❌   (write_test): TEST FAILED. write_packet() returned error.");
             }
             Either::Second(_) => {
                 info!("❌   (write_test): TEST FAILED. write_packet() timed out after 5s.");

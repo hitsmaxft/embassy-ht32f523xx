@@ -3,9 +3,9 @@
 #![no_std]
 #![no_main]
 
+use cortex_m_rt::entry;
 use embassy_ht32f523xx as hal;
 use {defmt_rtt as _, panic_probe as _};
-use cortex_m_rt::entry;
 
 // Shared data for testing critical section protection
 static mut SHARED_COUNTER: u32 = 0;
@@ -38,17 +38,13 @@ fn test_basic_critical_section() {
 
     // Test simple protection of shared data
     for i in 0..10 {
-        critical_section::with(|_| {
-            unsafe {
-                SHARED_COUNTER = i;
-            }
+        critical_section::with(|_| unsafe {
+            SHARED_COUNTER = i;
         });
     }
 
     // Verify final value
-    let final_value = critical_section::with(|_| {
-        unsafe { SHARED_COUNTER }
-    });
+    let final_value = critical_section::with(|_| unsafe { SHARED_COUNTER });
 
     defmt::info!("Basic test - final counter value: {}", final_value);
     assert_eq!(final_value, 9, "Basic critical section test failed");
@@ -63,24 +59,31 @@ fn test_nested_critical_sections() {
     critical_section::with(|_| {
         outer_value = 100;
 
-        critical_section::with(|_| {
-            unsafe {
-                SHARED_COUNTER = outer_value;
-                SHARED_ARRAY[0] = 200;
-            }
+        critical_section::with(|_| unsafe {
+            SHARED_COUNTER = outer_value;
+            SHARED_ARRAY[0] = 200;
         });
 
         outer_value = 150;
     });
 
     // Verify values are consistent
-    let (shared_counter, array_value) = critical_section::with(|_| {
-        unsafe { (SHARED_COUNTER, SHARED_ARRAY[0]) }
-    });
+    let (shared_counter, array_value) =
+        critical_section::with(|_| unsafe { (SHARED_COUNTER, SHARED_ARRAY[0]) });
 
-    defmt::info!("Nested test - counter: {}, array[0]: {}", shared_counter, array_value);
-    assert_eq!(shared_counter, 100, "Nested critical section counter test failed");
-    assert_eq!(array_value, 200, "Nested critical section array test failed");
+    defmt::info!(
+        "Nested test - counter: {}, array[0]: {}",
+        shared_counter,
+        array_value
+    );
+    assert_eq!(
+        shared_counter, 100,
+        "Nested critical section counter test failed"
+    );
+    assert_eq!(
+        array_value, 200,
+        "Nested critical section array test failed"
+    );
 }
 
 fn test_atomic_operations() {
@@ -106,18 +109,22 @@ fn test_atomic_operations() {
     });
 
     // Verify all operations completed correctly
-    let (counter, array_values) = critical_section::with(|_| {
-        unsafe {
-            let mut values = [0u32; 4];
-            for i in 0..4 {
-                values[i] = SHARED_ARRAY[i];
-            }
-            (SHARED_COUNTER, values)
+    let (counter, array_values) = critical_section::with(|_| unsafe {
+        let mut values = [0u32; 4];
+        for i in 0..4 {
+            values[i] = SHARED_ARRAY[i];
         }
+        (SHARED_COUNTER, values)
     });
 
-    defmt::info!("Atomic test - counter: {}, array: [{}, {}, {}, {}]",
-        counter, array_values[0], array_values[1], array_values[2], array_values[3]);
+    defmt::info!(
+        "Atomic test - counter: {}, array: [{}, {}, {}, {}]",
+        counter,
+        array_values[0],
+        array_values[1],
+        array_values[2],
+        array_values[3]
+    );
     assert_eq!(counter, 42, "Atomic test counter failed");
     assert_eq!(array_values[0], 1, "Atomic test array[0] failed");
     assert_eq!(array_values[1], 2, "Atomic test array[1] failed");

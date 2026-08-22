@@ -3,13 +3,13 @@
 
 use defmt::*;
 use embassy_executor::InterruptExecutor;
-use embassy_time::Timer;
-use embassy_ht32f523xx::{self, pac, embassy_time::Duration as HalDuration};
 use embassy_ht32f523xx as hal;
+use embassy_ht32f523xx::{self, embassy_time::Duration as HalDuration, pac};
+use embassy_time::Timer;
 
+use cortex_m_rt::entry;
 use defmt_rtt as _;
 use panic_probe as _;
-use cortex_m_rt::entry;
 
 // Static interrupt executor
 static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
@@ -62,13 +62,19 @@ async fn usb_nvic_test_task(p: embassy_ht32f523xx::Peripherals) {
         let iser0 = nvic.add(0x100); // ISER[0] offset
         let iser_value = iser0.read_volatile();
         let usb_enabled = (iser_value & (1 << 29)) != 0;
-        info!("🔧 NVIC_USB_ISENTRY: USB interrupt enabled = {}", usb_enabled);
+        info!(
+            "🔧 NVIC_USB_ISENTRY: USB interrupt enabled = {}",
+            usb_enabled
+        );
 
         // Check USB interrupt priority
         let ipr7 = nvic.add(0x400 + 7 * 4); // IPR[7] offset (USB is in register 7)
         let ipr_value = ipr7.read_volatile();
         let priority = (ipr_value >> 8) & 0xFF; // USB uses bits 8-15 of IPR[7]
-        info!("🔧 NVIC_USB_PRIORITY: USB interrupt priority = {}", priority);
+        info!(
+            "🔧 NVIC_USB_PRIORITY: USB interrupt priority = {}",
+            priority
+        );
     }
 
     // Initialize USB with fixed driver
@@ -87,7 +93,8 @@ async fn usb_nvic_test_task(p: embassy_ht32f523xx::Peripherals) {
     static mut CONFIG_DESCRIPTOR: [u8; 256] = [0; 256];
     static mut BOS_DESCRIPTOR: [u8; 256] = [0; 256];
     static mut CONTROL_BUF: [u8; 64] = [0; 64];
-    static mut STATE: embassy_usb::class::cdc_acm::State = embassy_usb::class::cdc_acm::State::new();
+    static mut STATE: embassy_usb::class::cdc_acm::State =
+        embassy_usb::class::cdc_acm::State::new();
 
     // Create USB builder
     let mut builder = embassy_usb::Builder::new(
@@ -100,7 +107,8 @@ async fn usb_nvic_test_task(p: embassy_ht32f523xx::Peripherals) {
     );
 
     // Create CDC-ACM class (easy to test with serial terminal)
-    let mut serial = embassy_usb::class::cdc_acm::CdcAcmClass::new(&mut builder, unsafe { &mut STATE }, 64);
+    let mut serial =
+        embassy_usb::class::cdc_acm::CdcAcmClass::new(&mut builder, unsafe { &mut STATE }, 64);
 
     // Build USB device
     let mut usb = builder.build();
@@ -124,7 +132,10 @@ async fn heartbeat_task() {
         Timer::after(HalDuration::from_secs(5)).await;
         count += 1;
 
-        info!("💓 USB NVIC Test #{} - Device should be enumerated on host", count);
+        info!(
+            "💓 USB NVIC Test #{} - Device should be enumerated on host",
+            count
+        );
 
         if count % 3 == 0 {
             info!("🔍 USB NVIC Status Check:");

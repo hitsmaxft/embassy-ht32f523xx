@@ -345,8 +345,11 @@ impl<'d> embassy_usb_driver::EndpointIn for Endpoint<'d, In> {
         EP_IN_COMPLETE[ep].store(false, Ordering::Release);
         write_usb_sram(endpoint_buffer_offset(ep), data);
         write_ep_reg(ep, EP_TCR_OFFSET, data.len() as u32);
+        info!("USB IN submit ep={} len={}", ep, data.len());
         set_ep_status(ep, EP_CSR_NAKTX, false);
-        wait_endpoint_transfer(ep, true).await
+        let result = wait_endpoint_transfer(ep, true).await;
+        info!("USB IN complete ep={} ok={}", ep, result.is_ok());
+        result
     }
 }
 
@@ -391,7 +394,16 @@ impl<'d> embassy_usb_driver::ControlPipe for ControlPipe<'d> {
             }
         })
         .await;
-        read_setup_packet()
+        let packet = read_setup_packet();
+        info!(
+            "USB setup bm={=u8:02x} req={=u8:02x} value={=u16:04x} index={=u16:04x} len={=u16}",
+            packet[0],
+            packet[1],
+            u16::from_le_bytes([packet[2], packet[3]]),
+            u16::from_le_bytes([packet[4], packet[5]]),
+            u16::from_le_bytes([packet[6], packet[7]])
+        );
+        packet
     }
 
     async fn data_out(
@@ -542,6 +554,7 @@ impl<'d> embassy_usb_driver::Bus for Bus<'d> {
         EP_ENABLED_WAKERS[ep].wake();
         EP_IN_WAKERS[ep].wake();
         EP_OUT_WAKERS[ep].wake();
+        info!("USB endpoint {=u8:02x} enabled={}", u8::from(addr), enabled);
     }
 
     async fn enable(&mut self) {
@@ -971,6 +984,7 @@ fn handle_endpoint_interrupt(ep: usize) {
         EP_OUT_WAKERS[ep].wake();
     }
     if flags & EP_INT_IDTX != 0 {
+        info!("USB IRQ IDTX ep={} flags={=u32:08x}", ep, flags);
         EP_IN_COMPLETE[ep].store(true, Ordering::Release);
         EP_IN_WAKERS[ep].wake();
     }

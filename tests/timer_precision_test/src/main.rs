@@ -5,15 +5,18 @@
 #![no_main]
 
 use embassy_executor::InterruptExecutor;
-use embassy_ht32f523xx::{self, embassy_time::{Duration, Instant, Timer}};
 use embassy_ht32f523xx as hal;
-use hal::pac::Interrupt;
+use embassy_ht32f523xx::{
+    self,
+    embassy_time::{Duration, Instant, Timer},
+};
 use hal::Config;
+use hal::pac::Interrupt;
 
+use cortex_m_rt::entry;
 use defmt::info;
 use defmt_rtt as _;
 use panic_probe as _;
-use cortex_m_rt::entry;
 
 // Static interrupt executor
 static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
@@ -97,15 +100,24 @@ async fn test_concurrent_timer_precision() {
     // Wait for all timers to complete
     timer_5ms.await;
     let elapsed_5ms = start.elapsed();
-    info!("✅ 5ms concurrent timer: {}ms elapsed", elapsed_5ms.as_millis());
+    info!(
+        "✅ 5ms concurrent timer: {}ms elapsed",
+        elapsed_5ms.as_millis()
+    );
 
     timer_10ms.await;
     let elapsed_10ms = start.elapsed();
-    info!("✅ 10ms concurrent timer: {}ms elapsed", elapsed_10ms.as_millis());
+    info!(
+        "✅ 10ms concurrent timer: {}ms elapsed",
+        elapsed_10ms.as_millis()
+    );
 
     timer_20ms.await;
     let elapsed_20ms = start.elapsed();
-    info!("✅ 20ms concurrent timer: {}ms elapsed", elapsed_20ms.as_millis());
+    info!(
+        "✅ 20ms concurrent timer: {}ms elapsed",
+        elapsed_20ms.as_millis()
+    );
 
     info!("✅ CONCURRENT_PRECISION_COMPLETE: Concurrent timer precision test passed");
 }
@@ -124,8 +136,10 @@ async fn test_instant_monotonicity() {
 
         // Verify monotonicity - current should always be >= last
         if current < last_instant {
-            panic!("⚠️ MONOTONICITY_VIOLATION: Instant went backwards! iteration: {}, last: {:?}, current: {:?}",
-                   i, last_instant, current);
+            panic!(
+                "⚠️ MONOTONICITY_VIOLATION: Instant went backwards! iteration: {}, last: {:?}, current: {:?}",
+                i, last_instant, current
+            );
         }
 
         last_instant = current;
@@ -138,8 +152,11 @@ async fn test_instant_monotonicity() {
     }
 
     let total_duration = last_instant.duration_since(start_instant);
-    info!("✅ MONOTONICITY_COMPLETE: Successfully verified {} monotonic samples over {}ms",
-          count, total_duration.as_millis());
+    info!(
+        "✅ MONOTONICITY_COMPLETE: Successfully verified {} monotonic samples over {}ms",
+        count,
+        total_duration.as_millis()
+    );
 }
 
 async fn test_timer_range_precision() {

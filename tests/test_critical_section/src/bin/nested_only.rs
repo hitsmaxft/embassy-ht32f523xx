@@ -3,9 +3,9 @@
 #![no_std]
 #![no_main]
 
+use cortex_m_rt::entry;
 use embassy_ht32f523xx as hal;
 use {defmt_rtt as _, panic_probe as _};
-use cortex_m_rt::entry;
 
 #[entry]
 fn main() -> ! {

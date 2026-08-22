@@ -14,9 +14,9 @@ use embassy_time_queue_utils::Queue;
 // Embassy-time tick frequency (1MHz = 1μs tick resolution)
 const TICK_HZ: u32 = 1_000_000;
 
-// Simple counters for tracking overflows (using static mut for Cortex-M0+ compatibility)
+// High word maintained by the GPTM0 update interrupt. Access is serialized by
+// critical sections because Cortex-M0+ has no native AtomicU64.
 static mut OVERFLOW_COUNT: u32 = 0;
-static mut LAST_COUNTER: u16 = 0;
 
 struct AlarmState {
     timestamp: Cell<u64>,
@@ -54,8 +54,10 @@ impl TimeDriver {
         timer.gptm_ctr().modify(|_, w| w.tme().clear_bit());
         timer.gptm_cntr().write(|w| unsafe { w.bits(0) });
 
-        // Get system clock frequency - use a reasonable default
-        let timer_freq = 48_000_000; // 48MHz system clock
+        // RCC configures GPTM0PCLK to CK_AHB (/1), so derive the prescaler
+        // from the frozen clock tree instead of assuming 48 MHz.
+        let timer_freq = crate::rcc::get_clocks().apb_clk().to_hz();
+        assert!(timer_freq >= TICK_HZ && timer_freq.is_multiple_of(TICK_HZ));
 
         // Calculate prescaler for TICK_HZ frequency (1MHz = 1us tick)
         let psc = (timer_freq / TICK_HZ) - 1;
@@ -66,33 +68,40 @@ impl TimeDriver {
         // Set to maximum period (16-bit timer)
         timer.gptm_crr().write(|w| unsafe { w.bits(0xFFFF) });
 
-        // Configure for up-counting mode
-        timer.gptm_mdcfr().modify(|_, w| w.tse().set_bit());
+        // Normal internal-clock, up-counting mode. MDCFR.TSE controls trigger
+        // input filtering; it is not a counter-direction selector.
+        timer.gptm_cntcfr().write(|w| unsafe { w.bits(0) });
+        timer.gptm_mdcfr().write(|w| unsafe { w.bits(0) });
 
-        // Set compare channel 0 for half-overflow (0x8000)
-        timer.gptm_ch0acr().write(|w| unsafe { w.bits(0x8000) });
+        // Configure channel 1 as a no-pin-change output compare channel. The
+        // Holtek FWLib writes the compare value to CHxCCR; CHxACR is only the
+        // asymmetric-PWM companion register.
+        timer.gptm_ch1ocfr().write(|w| unsafe { w.bits(0) });
+        timer.gptm_ch1ccr().write(|w| unsafe { w.bits(0) });
+        timer.gptm_chctr().modify(|_, w| w.ch1e().set_bit());
 
-        // Set compare channel 1 for alarm (will be set dynamically)
-        timer.gptm_ch1acr().write(|w| unsafe { w.bits(0x0000) });
+        // PSCR and CRR are preloaded registers. A software update event is
+        // required to copy them into their active shadow registers. Without
+        // this, GPTM0 continues with the reset /1 prescaler even though PSCR
+        // reads back the requested value.
+        timer.gptm_evgr().write(|w| w.uevg().set_bit());
 
-        // Enable interrupts: overflow, channel 0 (half-overflow), channel 1 (alarm)
-        timer.gptm_dictr().modify(|_, w| {
-            w.uevie().set_bit()    // Update Event (overflow) Interrupt Enable
-             .ch0ccie().set_bit()    // Channel 0 Interrupt Enable
-             .ch1ccie().clear_bit()  // Channel 1 Interrupt Enable (enabled when alarm set)
-        });
-
-        // Clear any pending interrupts
-        timer.gptm_intsr().write(|w| {
-            w.uevif().set_bit()    // Clear Update Event flag
-             .ch0ccif().set_bit()    // Clear Channel 0 flag
-             .ch1ccif().set_bit()    // Clear Channel 1 flag
+        // The software update sets UEVIF. Clear it before enabling the update
+        // interrupt, then configure the sole Embassy alarm channel.
+        timer.gptm_intsr().write(|w| unsafe { w.bits(0) });
+        cortex_m::asm::dsb();
+        timer.gptm_dictr().write(|w| {
+            w.uevie()
+                .set_bit() // Update Event (overflow) Interrupt Enable
+                .ch0ccie()
+                .clear_bit()
+                .ch1ccie()
+                .clear_bit() // Channel 1 Interrupt Enable (enabled when alarm set)
         });
 
         // Initialize static variables
         unsafe {
             OVERFLOW_COUNT = 0;
-            LAST_COUNTER = 0;
         }
 
         // Start timer
@@ -122,16 +131,14 @@ impl TimeDriver {
             // Write the compare value regardless of whether we enable it now
             // This way, when we enable it later, the right value is already set
             let timer = unsafe { &*crate::pac::Gptm0::ptr() };
-            timer.gptm_ch1acr().write(|w| unsafe { w.bits(timestamp as u32) });
+            timer
+                .gptm_ch1ccr()
+                .write(|w| unsafe { w.bits(timestamp as u32) });
 
-            // Enable it if it'll happen soon. Otherwise, period tracking will enable it.
-            // Use the same threshold as STM32: 0xc000 ticks (about 49ms at 1MHz)
-            let diff = timestamp - t;
-            if diff < 0xc000 {
-                timer.gptm_dictr().modify(|_, w| w.ch1ccie().set_bit());
-            } else {
-                timer.gptm_dictr().modify(|_, w| w.ch1ccie().clear_bit());
-            }
+            // Keep the low-word compare armed. For alarms more than one
+            // 16-bit period away it may fire early once per wrap; the ISR
+            // checks the full 64-bit timestamp and only wakes at expiry.
+            timer.gptm_dictr().modify(|_, w| w.ch1ccie().set_bit());
 
             // Reevaluate if the alarm timestamp is still in the future
             let t = self.now();
@@ -152,9 +159,17 @@ impl TimeDriver {
         self.alarm.borrow(cs).timestamp.set(u64::MAX);
 
         // Process expired timers and set next alarm using STM32 pattern
-        let mut next = self.queue.borrow(cs).borrow_mut().next_expiration(self.now());
+        let mut next = self
+            .queue
+            .borrow(cs)
+            .borrow_mut()
+            .next_expiration(self.now());
         while !self.set_alarm(next) {
-            next = self.queue.borrow(cs).borrow_mut().next_expiration(self.now());
+            next = self
+                .queue
+                .borrow(cs)
+                .borrow_mut()
+                .next_expiration(self.now());
         }
     }
 
@@ -166,29 +181,33 @@ impl TimeDriver {
         // Read interrupt status outside critical section
         let intsr = timer.gptm_intsr().read();
 
-        // Clear all interrupt flags immediately (outside critical section)
-        timer.gptm_intsr().write(|w| {
-            w.uevif().set_bit()    // Clear Update Event flag
-             .ch0ccif().set_bit()    // Clear Channel 0 flag
-             .ch1ccif().set_bit()    // Clear Channel 1 flag
-        });
+        // W0C: zero only the flags observed in this snapshot and write one to
+        // every other bit, so an event arriving after the read is preserved.
+        timer
+            .gptm_intsr()
+            .write(|w| unsafe { w.bits(!intsr.bits()) });
+        // Match Holtek TM_ClearFlag(): ensure W0C reaches the peripheral
+        // before exception return, otherwise NVIC may immediately re-enter.
+        cortex_m::asm::dsb();
 
         // Handle update event (overflow) interrupt - no critical section needed
         if intsr.uevif().bit() {
-            // Timer overflow occurred - this may affect period tracking
-            // Our overflow detection in now() will handle this
+            critical_section::with(|_| unsafe {
+                OVERFLOW_COUNT = OVERFLOW_COUNT.wrapping_add(1);
+            });
         }
 
-        // Handle channel 0 (half-overflow) interrupt - no critical section needed
-        if intsr.ch0ccif().bit() {
-            // Half-overflow occurred - may affect period tracking
-        }
-
-        // Handle channel 1 (alarm) interrupt - use minimal critical section
-        if intsr.ch1ccif().bit() {
-            // Only use critical section for the minimal alarm processing
+        // A compare can occur in an earlier 16-bit period. Only publish the
+        // alarm when its full timestamp has actually expired. Also check at
+        // overflow to close the compare/overflow boundary race.
+        if intsr.ch1ccif().bit() || intsr.uevif().bit() {
             critical_section::with(|cs| {
-                self.trigger_alarm(cs);
+                let timestamp = self.alarm.borrow(cs).timestamp.get();
+                if timestamp != u64::MAX && timestamp <= self.now() {
+                    let timer = unsafe { &*crate::pac::Gptm0::ptr() };
+                    timer.gptm_dictr().modify(|_, w| w.ch1ccie().clear_bit());
+                    self.trigger_alarm(cs);
+                }
             });
         }
     }
@@ -198,27 +217,16 @@ impl Driver for TimeDriver {
     fn now(&self) -> u64 {
         let timer = unsafe { &*crate::pac::Gptm0::ptr() };
 
-        // Get current counter value
-        let counter = timer.gptm_cntr().read().bits() as u16;
+        critical_section::with(|_| {
+            let high = unsafe { OVERFLOW_COUNT };
+            let counter = timer.gptm_cntr().read().bits() as u16;
+            let overflow_pending = timer.gptm_intsr().read().uevif().bit_is_set();
 
-        // Use critical section to safely update static variables
-        let now = critical_section::with(|_| {
-            unsafe {
-                // Check if we've had an overflow (counter wrapped around)
-                if counter < LAST_COUNTER {
-                    // Counter wrapped around, increment overflow count
-                    OVERFLOW_COUNT += 1;
-                }
-
-                // Update last counter
-                LAST_COUNTER = counter;
-
-                // Calculate timestamp: (overflow_count * 65536) + counter
-                ((OVERFLOW_COUNT as u64) << 16) | (counter as u64)
-            }
-        });
-
-        now
+            // If the counter wrapped before its ISR ran, include that pending
+            // period in this sample without mutating the ISR-owned high word.
+            let high = high.wrapping_add(overflow_pending as u32);
+            ((high as u64) << 16) | counter as u64
+        })
     }
 
     fn schedule_wake(&self, at: u64, waker: &core::task::Waker) {
@@ -242,7 +250,6 @@ pub(crate) fn init(cs: CriticalSection) {
 }
 
 /// Get the time driver instance - used by interrupt handler
-pub fn get_driver() -> &'static TimeDriver {
+pub(crate) fn get_driver() -> &'static TimeDriver {
     &DRIVER
 }
-

@@ -10,10 +10,10 @@
 //!
 //! The build script also sets the linker flags to tell it which link script to use.
 
+use std::env;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
-use std::{env};
 
 fn main() {
     let out = &PathBuf::from(env::var_os("OUT_DIR").unwrap());
@@ -26,7 +26,6 @@ fn main() {
     // Only re-run the build script when memory.x is changed,
     // instead of when any part of the source code changes.
     println!("cargo:rerun-if-changed=../../memory_ht32f52352.x");
-
 
     // Specify linker arguments.
     // `--nmagic` is required if memory section addresses are not aligned to 0x10000,

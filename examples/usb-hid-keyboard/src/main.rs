@@ -8,7 +8,7 @@ use embassy_ht32f523xx::gpio::{Pin, Pull, mode};
 use embassy_ht32f523xx::usb::{Config as UsbConfig, Driver};
 use embassy_time::{Duration, Timer};
 use embassy_usb::Builder;
-use embassy_usb::class::hid::{Config, HidWriter, State};
+use embassy_usb::class::hid::{Config, HidBootProtocol, HidSubclass, HidWriter, State};
 use embassy_usb::driver::EndpointError;
 use embedded_hal::digital::InputPin;
 use panic_probe as _;
@@ -71,6 +71,8 @@ async fn main(_spawner: Spawner) {
         request_handler: None,
         poll_ms: 60,
         max_packet_size: 8,
+        hid_subclass: HidSubclass::Boot,
+        hid_boot_protocol: HidBootProtocol::Keyboard,
     };
 
     let hid = HidWriter::<_, 8>::new(&mut builder, state, hid_config);

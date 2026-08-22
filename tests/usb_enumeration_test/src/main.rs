@@ -3,12 +3,16 @@
 
 use defmt::*;
 use embassy_executor::InterruptExecutor;
-use embassy_ht32f523xx::{self, embassy_time::{Duration, Timer}, pac};
 use embassy_ht32f523xx as hal;
+use embassy_ht32f523xx::{
+    self,
+    embassy_time::{Duration, Timer},
+    pac,
+};
 
+use cortex_m_rt::entry;
 use defmt_rtt as _;
 use panic_probe as _;
-use cortex_m_rt::entry;
 
 // Static interrupt executor - like working timer precision test
 static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
@@ -34,7 +38,6 @@ fn main() -> ! {
 
 #[embassy_executor::task]
 async fn main_task() {
-
     info!("🔧 InterruptExecutor task started - testing timer functionality with USB");
 
     // Test timer FIRST - before any USB operations with InterruptExecutor

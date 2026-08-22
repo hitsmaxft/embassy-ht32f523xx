@@ -10,11 +10,13 @@
 
 #![cfg(test)]
 
-use embassy_time_driver::{Driver, Ticks, TICKS_PER_SECOND};
 use embassy_time::Duration;
+use embassy_time_driver::{Driver, TICKS_PER_SECOND, Ticks};
 
 // Import our custom time driver
-use embassy_ht32f523xx::time_driver_enhanced::{EnhancedTimeDriver, init_enhanced_time_driver, get_driver_stats};
+use embassy_ht32f523xx::time_driver_enhanced::{
+    EnhancedTimeDriver, get_driver_stats, init_enhanced_time_driver,
+};
 
 // ============================================================================
 // Precision and Accuracy Tests
@@ -33,8 +35,13 @@ fn test_time_precision_1_second() {
     let expected_ticks = TICKS_PER_SECOND as u64;
 
     // Allow ±1% precision based on embassy-time specs
-    let error_percent = ((measured_ticks as i64 - expected_ticks as i64).abs() * 100) / expected_ticks as i64;
-    assert!(error_percent <= 1, "1-second measurement error: {}% (target <= 1%)", error_percent);
+    let error_percent =
+        ((measured_ticks as i64 - expected_ticks as i64).abs() * 100) / expected_ticks as i64;
+    assert!(
+        error_percent <= 1,
+        "1-second measurement error: {}% (target <= 1%)",
+        error_percent
+    );
 }
 
 #[test]
@@ -49,8 +56,13 @@ fn test_time_precision_10_milliseconds() {
     let expected_ticks = (10_000 * TICKS_PER_SECOND) / 1_000_000; // 10ms in ticks
 
     // Enterprise requirement: <2% error for short intervals
-    let error_percent = ((measured_ticks as i64 - expected_ticks as i64).abs() * 100) / expected_ticks as i64;
-    assert!(error_percent <= 2, "10ms measurement error: {}% (target <= 2%)", error_percent);
+    let error_percent =
+        ((measured_ticks as i64 - expected_ticks as i64).abs() * 100) / expected_ticks as i64;
+    assert!(
+        error_percent <= 2,
+        "10ms measurement error: {}% (target <= 2%)",
+        error_percent
+    );
 }
 
 fn measure_interval(micros: u64) -> u64 {
@@ -73,12 +85,21 @@ fn measure_interval(micros: u64) -> u64 {
 #[test]
 fn test_driver_initialization() {
     let driver_result = init_enhanced_time_driver();
-    assert!(driver_result.is_ok(), "Driver initialization should succeed: {:?}", driver_result);
+    assert!(
+        driver_result.is_ok(),
+        "Driver initialization should succeed: {:?}",
+        driver_result
+    );
 
     let stats = get_driver_stats();
-    assert!(stats.is_initialized, "Driver should be marked as initialized");
-    assert_eq!(stats.timer_stats.current_settings.tick_frequency_hz, 1_000_000,
-               "Expected 1MHz tick frequency");
+    assert!(
+        stats.is_initialized,
+        "Driver should be marked as initialized"
+    );
+    assert_eq!(
+        stats.timer_stats.current_settings.tick_frequency_hz, 1_000_000,
+        "Expected 1MHz tick frequency"
+    );
 }
 
 #[test]
@@ -95,8 +116,10 @@ fn test_performance_metrics_collection() {
 
     let stats_after = get_driver_stats();
     // Should have at least one counter read
-    assert!(stats_after.total_interrupts >= stats_before.total_interrupts,
-            "Statistics should reflect activity");
+    assert!(
+        stats_after.total_interrupts >= stats_before.total_interrupts,
+        "Statistics should reflect activity"
+    );
 }
 
 #[test]
@@ -122,7 +145,11 @@ fn test_long_term_stability_simulation() {
 
     let average_drift = total_drift / samples;
     // Enterprise requirement: <=10ppm average drift per measurement
-    assert!(average_drift <= 10, "Average drift {}ppm exceeds 10ppm enterprise requirement", average_drift);
+    assert!(
+        average_drift <= 10,
+        "Average drift {}ppm exceeds 10ppm enterprise requirement",
+        average_drift
+    );
 }
 
 // ============================================================================
@@ -157,8 +184,10 @@ fn test_schedule_wake_future() {
     // Future: Add comprehensive wake-up scheduling tests once hardware environment is available
 
     let stats_after = get_driver_stats();
-    assert!(stats_after.total_schedules >= stats_before.total_schedules,
-            "Schedule count should increase");
+    assert!(
+        stats_after.total_schedules >= stats_before.total_schedules,
+        "Schedule count should increase"
+    );
 }
 
 // ============================================================================
@@ -184,7 +213,10 @@ fn test_monotonicity_under_pressure() {
     }
 
     // Strict requirement: zero time violations for production-grade time driver
-    assert_eq!(violations, 0, "Time violations detected - this is critical for production systems");
+    assert_eq!(
+        violations, 0,
+        "Time violations detected - this is critical for production systems"
+    );
 }
 
 #[test]
@@ -260,10 +292,10 @@ impl EnterpriseValidation {
     }
 
     pub fn all_tests_passed(&self) -> bool {
-        self.precision_tests_passed &&
-        self.performance_metrics_verified &&
-        self.monotonicity_validated &&
-        self.memory_safety_confirmed
+        self.precision_tests_passed
+            && self.performance_metrics_verified
+            && self.monotonicity_validated
+            && self.memory_safety_confirmed
         // Note: hardware tests optional based on deployment environment
     }
 
@@ -275,11 +307,31 @@ impl EnterpriseValidation {
             - Monotonicity: {}, Zero violations required\n\
             - Memory Safety: {}, Concurrent access safe\n\
             - Hardware Integration: {}",
-            if self.precision_tests_passed { "✅ PASS" } else { "❌ FAIL" },
-            if self.performance_metrics_verified { "✅ PASS" } else { "❌ FAIL" },
-            if self.monotonicity_validated { "✅ PASS" } else { "❌ FAIL" },
-            if self.memory_safety_confirmed { "✅ PASS" } else { "❌ FAIL" },
-            if self.hardware_integration_tested { "✅ PASS" } else { "⏸️ SKIPPED (requires hardware)" },
+            if self.precision_tests_passed {
+                "✅ PASS"
+            } else {
+                "❌ FAIL"
+            },
+            if self.performance_metrics_verified {
+                "✅ PASS"
+            } else {
+                "❌ FAIL"
+            },
+            if self.monotonicity_validated {
+                "✅ PASS"
+            } else {
+                "❌ FAIL"
+            },
+            if self.memory_safety_confirmed {
+                "✅ PASS"
+            } else {
+                "❌ FAIL"
+            },
+            if self.hardware_integration_tested {
+                "✅ PASS"
+            } else {
+                "⏸️ SKIPPED (requires hardware)"
+            },
         )
     }
 }

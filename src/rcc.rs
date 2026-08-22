@@ -363,7 +363,14 @@ fn configure_bus_clocks(
     ckcu.ahbcfgr()
         .modify(|_, w| unsafe { w.ahbpre().bits(prescaler) });
 
-    // HT32F523xx has no independent APB prescaler: CK_APB follows CK_AHB.
+    // Each APB peripheral has its own /1, /2, /4, /8 selector. The public
+    // clock model exposes one APB frequency, so initialize every selector to
+    // /1 just as the Holtek reset configuration and ChibiOS clock setup do.
+    // This also makes initialization deterministic after a debugger reset,
+    // which does not necessarily power-reset peripheral registers.
+    ckcu.apbpcsr0().write(|w| unsafe { w.bits(0) });
+    ckcu.apbpcsr1().write(|w| unsafe { w.bits(0) });
+
     let ahb_clk = Hertz::hz(sys_hz / divisor);
     let apb_clk = requested_apb.unwrap_or(ahb_clk);
     assert_eq!(
@@ -451,10 +458,9 @@ fn enable_gpio_clocks(ckcu: &crate::pac::ckcu::RegisterBlock) {
     #[cfg(feature = "usb")]
     ckcu.ahbccr().modify(|_, w| w.usben().set_bit());
 
-    // Enable AFIO clock (AFIO is on APB bus)
-    ckcu.apbccr0().modify(|_, w| {
-        w.afioen().set_bit() // Enable AFIO
-    });
+    // Enable AFIO and EXTI clocks (both are on APB0).
+    ckcu.apbccr0()
+        .modify(|_, w| w.afioen().set_bit().extien().set_bit());
 
     // Enable timer clocks (Timers are on APB bus)
     ckcu.apbccr1().modify(|_, w| {

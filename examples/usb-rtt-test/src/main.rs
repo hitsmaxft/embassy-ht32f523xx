@@ -3,15 +3,15 @@
 
 use defmt::*;
 use embassy_executor::InterruptExecutor;
-use embassy_usb::Builder;
-use embassy_time::Timer;
-use embassy_ht32f523xx::{self, pac, embassy_time::Duration};
-use embassy_ht32f523xx::usb::{Driver, Config as UsbConfig};
 use embassy_ht32f523xx as hal;
+use embassy_ht32f523xx::usb::{Config as UsbConfig, Driver};
+use embassy_ht32f523xx::{self, embassy_time::Duration, pac};
+use embassy_time::Timer;
+use embassy_usb::Builder;
 
+use cortex_m_rt::entry;
 use defmt_rtt as _;
 use panic_probe as _;
-use cortex_m_rt::entry;
 use static_cell::StaticCell;
 
 // Static interrupt executor - prevents timer conflicts with USB
@@ -106,10 +106,16 @@ async fn heartbeat_task() {
         Timer::after(Duration::from_secs(10)).await;
         count += 1;
 
-        info!("💓 USB RTT Test alive #{} - Connect USB cable to see enumeration events", count);
+        info!(
+            "💓 USB RTT Test alive #{} - Connect USB cable to see enumeration events",
+            count
+        );
 
         if count % 6 == 0 {
-            info!("🔍 USB RTT Test: {} minutes elapsed - Looking for enumeration logs", count / 6);
+            info!(
+                "🔍 USB RTT Test: {} minutes elapsed - Looking for enumeration logs",
+                count / 6
+            );
             info!("🎯 Expected RTT events: 🔄 USB_IRQ_RESET, 📋 SETUP_PACKET, 📨 USB_IRQ_EP0");
             info!("🔌 Connect USB cable to host system to trigger enumeration sequence");
             info!("⏰ After USB operations, timer should still work with InterruptExecutor");

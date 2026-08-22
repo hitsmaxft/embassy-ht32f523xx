@@ -4,6 +4,7 @@ members = [
     "examples/blink",
     "examples/serial-echo",
     "examples/usb-hid-keyboard",
+    "examples/usb-raw-hid-speed-test",
     "examples/usb-rtt-test",
     "examples/usb-serial-test",
     "examples/ht32-rmk-60key",
@@ -24,7 +25,7 @@ resolver = "2"
 
 [package]
 name = "embassy-ht32f523xx"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["hitsmaxft <mfthits@gmail.com>"]
 description = "Embassy async runtime and HAL for HT32F523xx microcontrollers"
@@ -56,12 +57,12 @@ nb = "1.0"
 # ht32f523x2 = "0.5"
 ht32f523x2 = { git = "https://github.com/hitsmaxft/ht32f523x2.git" }
 embassy-executor = "0.9.0"
-embassy-time = "0.5.0"
-embassy-time-driver = "0.2.1"
+embassy-time = "0.5.1"
+embassy-time-driver = "0.2.2"
 embassy-time-queue-utils = "0.3.0"
-embassy-sync = "0.7.2"
+embassy-sync = "0.8.0"
 embassy-futures = "0.1.2"
-embassy-usb = "0.5.0"
+embassy-usb = "0.6.0"
 embassy-usb-driver = "0.2.0"
 embedded-storage = "0.3.1"
 #embedded-storage-async = "0.4.1"
@@ -83,12 +84,12 @@ nb = "1.0"
 #ht32f523x2 = { path = "deps/ht32f523x2" }
 ht32f523x2 = { git = "https://github.com/hitsmaxft/ht32f523x2.git" }
 embassy-executor = "0.9.0"
-embassy-time = "0.5.0"
-embassy-time-driver = "0.2.1"
+embassy-time = "0.5.1"
+embassy-time-driver = "0.2.2"
 embassy-time-queue-utils = "0.3.0"
-embassy-sync = "0.7.2"
+embassy-sync = "0.8.0"
 embassy-futures = "0.1.2"
-embassy-usb = "0.5.0"
+embassy-usb = "0.6.0"
 embassy-usb-driver = "0.2.0"
 embedded-storage = "0.3.1"
 embedded-storage-async = "0.4.1"
@@ -96,7 +97,7 @@ critical-section = "1.0"
 defmt = "0.3"
 defmt-rtt = "0.4"
 panic-probe = "0.3"
-usbd-hid = "0.8"
+usbd-hid = "0.10"
 
 [profile.dev]
 debug = 2

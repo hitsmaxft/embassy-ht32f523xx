@@ -10,8 +10,8 @@ use core::cell::Cell;
 use core::sync::atomic::Ordering;
 
 /// Interrupt numbers based on research findings and PAC verification
-pub const BFTM0_IRQ: u8 = 19;
-pub const BFTM1_IRQ: u8 = 20;
+pub const BFTM0_IRQ: u8 = 17;
+pub const BFTM1_IRQ: u8 = 18;
 
 // ============================================================================
 // BFTM Instance Management (Following Embassy Pattern)
@@ -83,11 +83,11 @@ pub struct BftmConfig {
 impl Default for BftmConfig {
     fn default() -> Self {
         Self {
-            tick_frequency_hz: 1_000_000,      // 1MHz tick = 1μs resolution
-            compare_value: BFTM_MAX_COUNT,     // Free-running mode
+            tick_frequency_hz: 1_000_000,  // 1MHz tick = 1μs resolution
+            compare_value: BFTM_MAX_COUNT, // Free-running mode
             interrupt_enabled: true,
             one_shot: false,
-            interrupt_priority: 0,  // Highest priority for time driver
+            interrupt_priority: 0, // Highest priority for time driver
         }
     }
 }
@@ -97,7 +97,7 @@ impl BftmConfig {
     pub fn embassy_time_driver() -> Self {
         Self {
             tick_frequency_hz: 1_000_000,
-            compare_value: BFTM_HALF_CYCLE,    // Critical for 64-bit overflow
+            compare_value: BFTM_HALF_CYCLE, // Critical for 64-bit overflow
             interrupt_enabled: true,
             one_shot: false,
             interrupt_priority: 0,
@@ -127,15 +127,12 @@ const BFTM_MAX_COUNT: u32 = 0xFFFF_FFFF;
 const BFTM_HALF_CYCLE: u32 = 0x8000_0000;
 
 // Re-export main timer instance for public API
-pub use {BTFM0 as BFTM_Timer};
+pub use BTFM0 as BFTM_Timer;
 
 /// BFTM Control Register Bits (based on ChibiOS)
-const BFTM_CR_CEN: u32   = 1 << 0;    // Counter Enable
-const BFTM_CR_OSM: u32   = 1 << 1;    // One Shot Mode
-const BFTM_CR_MIEN: u32  = 1 << 2;    // Match Interrupt Enable
-
-/// BFTM Status Register Bits
-const BFTM_SR_MF: u32    = 1 << 0;    // Match Flag
+const BFTM_CR_CEN: u32 = 1 << 2; // Counter Enable
+const BFTM_CR_OSM: u32 = 1 << 1; // One Shot Mode
+const BFTM_CR_MIEN: u32 = 1 << 0; // Match Interrupt Enable
 
 // ============================================================================
 // BFTM Instance Driver
@@ -176,8 +173,6 @@ impl<T: Instance> Btfm<T> {
         // Validate configuration
         self.validate_config()?;
 
-        let enable_disable = self.config.interrupt_enabled;
-
         // Enable peripheral clock
         Self::enable_timer_clock();
 
@@ -191,7 +186,8 @@ impl<T: Instance> Btfm<T> {
         regs.sr().write(|w| unsafe { w.bits(0) });
 
         // Set compare value based on configuration
-        regs.cmpr().write(|w| unsafe { w.bits(self.config.compare_value) });
+        regs.cmpr()
+            .write(|w| unsafe { w.bits(self.config.compare_value) });
 
         // Configure control register
         let mut cr_bits = BFTM_CR_CEN; // Always enable counter
@@ -278,7 +274,7 @@ impl<T: Instance> Btfm<T> {
 
         regs.cr().modify(|_, w| {
             if enabled {
-                w.mien().set_bit()   // Enable match interrupt
+                w.mien().set_bit() // Enable match interrupt
             } else {
                 w.mien().clear_bit() // Disable match interrupt
             }
@@ -298,7 +294,8 @@ impl<T: Instance> Btfm<T> {
         let regs = T::regs();
 
         // Clear the match flag
-        regs.sr().modify(|_, w| w.mif().set_bit()); // Note: HT32 uses write-1-to-clear
+        regs.sr().write(|w| unsafe { w.bits(0) });
+        cortex_m::asm::dsb();
 
         // Increment performance counter
         self.total_interrupts.set(self.total_interrupts.get() + 1);
@@ -339,7 +336,7 @@ impl<T: Instance> Btfm<T> {
         let regs = T::regs();
 
         if enable {
-            regs.cr().modify(|_, w| w.osm().set_bit());  // One-shot mode enable
+            regs.cr().modify(|_, w| w.osm().set_bit()); // One-shot mode enable
         } else {
             regs.cr().modify(|_, w| w.osm().clear_bit());
         }
@@ -372,7 +369,8 @@ impl<T: Instance> Btfm<T> {
             return Err(BftmError::CompareValueTooLarge);
         }
 
-        if self.config.interrupt_priority > 15 {  // Cortex-M0+ has 16 priorities
+        if self.config.interrupt_priority > 15 {
+            // Cortex-M0+ has 16 priorities
             return Err(BftmError::InvalidPriority);
         }
 
@@ -399,7 +397,9 @@ impl<T: Instance> Btfm<T> {
             target_time - current_cnt
         } else {
             // Handle wrapping case
-            (BFTM_MAX_COUNT - current_cnt).saturating_add(target_time).saturating_add(1)
+            (BFTM_MAX_COUNT - current_cnt)
+                .saturating_add(target_time)
+                .saturating_add(1)
         };
 
         distance >= MIN_DISTANCE
@@ -434,11 +434,7 @@ pub static mut BTFM1: Btfm<Bftm1Instance> = Btfm::new();
 
 /// 64-bit timestamp calculation using 32-bit BFTM counter with overflow extension
 /// Implements enhanced half-cycle algorithm from research documentation
-pub fn calc_64bit_timestamp(
-    current_counter: u32,
-    period_counter: u32,
-    last_counter: u32,
-) -> u64 {
+pub fn calc_64bit_timestamp(current_counter: u32, period_counter: u32, last_counter: u32) -> u64 {
     // Use 2^31 half-cycle algorithm for 32-bit BFTM
     // This reduces interrupt frequency by 1000x vs 16-bit GPTM approach
 
@@ -509,20 +505,17 @@ pub enum BftmError {
 impl core::fmt::Display for BftmError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            BftmError::ImmediateTriggerRisk =>
-                write!(f, "Timer would trigger immediately (race condition risk)"),
-            BftmError::InvalidTargetFrequency =>
-                write!(f, "Invalid target timer frequency"),
-            BftmError::CompareValueTooLarge =>
-                write!(f, "Compare value exceeds 32-bit maximum"),
-            BftmError::InvalidPriority =>
-                write!(f, "Invalid interrupt priority (must be 0-15)"),
-            BftmError::InitializationFailed =>
-                write!(f, "Hardware initialization verification failed"),
-            BftmError::InvalidConfiguration =>
-                write!(f, "Invalid timer configuration"),
-            BftmError::UnsafeConfiguration =>
-                write!(f, "Configuration may cause unsafe operation"),
+            BftmError::ImmediateTriggerRisk => {
+                write!(f, "Timer would trigger immediately (race condition risk)")
+            }
+            BftmError::InvalidTargetFrequency => write!(f, "Invalid target timer frequency"),
+            BftmError::CompareValueTooLarge => write!(f, "Compare value exceeds 32-bit maximum"),
+            BftmError::InvalidPriority => write!(f, "Invalid interrupt priority (must be 0-15)"),
+            BftmError::InitializationFailed => {
+                write!(f, "Hardware initialization verification failed")
+            }
+            BftmError::InvalidConfiguration => write!(f, "Invalid timer configuration"),
+            BftmError::UnsafeConfiguration => write!(f, "Configuration may cause unsafe operation"),
         }
     }
 }

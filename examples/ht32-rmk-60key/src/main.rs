@@ -6,34 +6,117 @@
 //! - Layers: 3 layers (Base, Function, System)
 //! - USB: Full-speed USB 2.0 with 8 endpoints
 //!
-//! ## Memory Usage with Vial Support
-//! ✅ **Vial support**: Successfully enabled and fits in 128KB flash in release mode.
-//! ⚠️  **Build requirements**:
-//! - Debug builds will overflow flash memory
-//! - **Use `cargo build --release`** for Vial support
-//! - Release mode optimizations reduce binary size significantly
-//! - Estimated flash usage: ~120KB (fits comfortably in 128KB)
+//! This target intentionally uses a fixed keymap without Vial or persistent
+//! storage so it can fit the HT32F52352's 16 KiB RAM budget.
 
 #![no_main]
 #![no_std]
 
 mod keymap;
-mod vial;
-
+#[cfg(feature = "swd-key-inject")]
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_ht32f523xx::usb::Driver;
 use keymap::{COL, ROW};
+#[cfg(not(feature = "swd-key-inject"))]
 use panic_halt as _;
-use rmk::channel::EVENT_CHANNEL;
-use rmk::config::{BehaviorConfig, PositionalConfig, RmkConfig, StorageConfig, VialConfig};
+#[cfg(feature = "swd-key-inject")]
+use panic_probe as _;
+use rmk::config::{BehaviorConfig, PositionalConfig, RmkConfig};
 use rmk::debounce::default_debouncer::DefaultDebouncer;
-use rmk::futures::future::join3;
-use rmk::input_device::Runnable;
 use rmk::keyboard::Keyboard;
 use rmk::matrix::Matrix;
-use rmk::storage::async_flash_wrapper;
-use rmk::{initialize_keymap_and_storage, run_devices, run_rmk};
-use vial::{VIAL_KEYBOARD_DEF, VIAL_KEYBOARD_ID};
+use rmk::usb::UsbTransport;
+use rmk::{KeymapData, initialize_keymap, run_all};
+
+#[cfg(feature = "swd-key-inject")]
+use core::sync::atomic::{AtomicU32, Ordering};
+#[cfg(feature = "swd-key-inject")]
+use embassy_time::{Duration, Timer};
+#[cfg(feature = "swd-key-inject")]
+use rmk::core_traits::Runnable;
+#[cfg(feature = "swd-key-inject")]
+use rmk::event::{KeyboardEvent, publish_event_async};
+#[cfg(feature = "swd-key-inject")]
+use rmk::hid::{KeyboardReport, Report};
+#[cfg(feature = "swd-key-inject")]
+use rmk::state::set_usb_state;
+#[cfg(feature = "swd-key-inject")]
+use rmk_types::connection::UsbState;
+
+/// SWD test command encoding:
+/// bit 31 = valid, bit 30 = pressed, bits 15:8 = row, bits 7:0 = column.
+#[cfg(feature = "swd-key-inject")]
+#[unsafe(no_mangle)]
+pub static RMK_SWD_KEY_COMMAND: AtomicU32 = AtomicU32::new(0);
+
+/// The last consumed command, with bit 29 set as an acknowledgement marker.
+#[cfg(feature = "swd-key-inject")]
+#[unsafe(no_mangle)]
+pub static RMK_SWD_KEY_ACK: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(feature = "swd-key-inject")]
+struct SwdKeyInjector;
+
+#[cfg(feature = "swd-key-inject")]
+impl Runnable for SwdKeyInjector {
+    async fn run(&mut self) -> ! {
+        loop {
+            let command = RMK_SWD_KEY_COMMAND.load(Ordering::Acquire);
+            if command & 0x8000_0000 != 0 {
+                RMK_SWD_KEY_COMMAND.store(0, Ordering::Release);
+                let pressed = command & 0x4000_0000 != 0;
+                if command & 0x1000_0000 != 0 {
+                    set_usb_state(UsbState::Configured);
+                    defmt::info!("SWD forced RMK USB state to Configured");
+                    RMK_SWD_KEY_ACK.store(command | 0x2000_0000, Ordering::Release);
+                    continue;
+                }
+                if command & 0x0800_0000 != 0 {
+                    let keycodes = if pressed { [4, 0, 0, 0, 0, 0] } else { [0; 6] };
+                    rmk::channel::USB_REPORT_CHANNEL
+                        .send(Report::KeyboardReport(KeyboardReport {
+                            modifier: 0,
+                            reserved: 0,
+                            leds: 0,
+                            keycodes,
+                        }))
+                        .await;
+                    defmt::info!("SWD direct keyboard report pressed={}", pressed);
+                    RMK_SWD_KEY_ACK.store(command | 0x2000_0000, Ordering::Release);
+                    continue;
+                }
+                let row = ((command >> 8) & 0xff) as u8;
+                let col = (command & 0xff) as u8;
+                if row < ROW as u8 && col < COL as u8 {
+                    publish_event_async(KeyboardEvent::key(row, col, pressed)).await;
+                    defmt::info!("SWD RMK event row={} col={} pressed={}", row, col, pressed);
+                    RMK_SWD_KEY_ACK.store(command | 0x2000_0000, Ordering::Release);
+                } else {
+                    RMK_SWD_KEY_ACK.store(0xe000_0000, Ordering::Release);
+                }
+            }
+            Timer::after(Duration::from_millis(1)).await;
+        }
+    }
+}
+
+// A workspace-wide build unifies Embassy's optional defmt feature through
+// other examples. This target does not log, but defmt still requires this Rust
+// symbol when its checked arithmetic reaches a panic path.
+#[cfg(not(feature = "swd-key-inject"))]
+#[unsafe(export_name = "_defmt_panic")]
+fn defmt_panic() -> ! {
+    loop {
+        cortex_m::asm::bkpt();
+    }
+}
+
+#[cfg(feature = "swd-key-inject")]
+#[defmt::panic_handler]
+fn defmt_panic() -> ! {
+    panic_probe::hard_fault()
+}
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -72,43 +155,34 @@ async fn main(_spawner: Spawner) {
         p.gpiob.pb13().degrade(),
     ];
 
-    // Initialize HT32F52352 flash storage (16KB RAM, 128KB Flash)
-    let flash = async_flash_wrapper(p.flash);
-
-    // Initialize the storage and keymap with full RMK functionality
-    let mut default_keymap = keymap::get_default_keymap();
+    // Initialize the fixed in-memory keymap. Vial and persistent storage are
+    // intentionally excluded from this constrained target.
+    let mut keymap_data = KeymapData::new(keymap::get_default_keymap());
     let mut behavior_config = BehaviorConfig::default();
-    let storage_config = StorageConfig::default();
-    let mut positional_config = PositionalConfig::default();
+    let positional_config = PositionalConfig::default();
 
-    let (keymap, mut storage) = initialize_keymap_and_storage(
-        &mut default_keymap,
-        flash,
-        &storage_config,
-        &mut behavior_config,
-        &mut positional_config,
-    )
-    .await;
+    let keymap =
+        initialize_keymap(&mut keymap_data, &mut behavior_config, &positional_config).await;
 
     // Initialize the matrix scanner and keyboard
     let debouncer = DefaultDebouncer::<ROW, COL>::new();
     let mut matrix = Matrix::<_, _, _, ROW, COL, true>::new(input_pins, output_pins, debouncer);
     let mut keyboard = Keyboard::new(&keymap);
 
-    // RMK configuration with Vial support
-    let unlock_keys = &[(0, 0), (0, 1)]; // ESC + 1 keys to unlock Vial
-    let rmk_config = RmkConfig {
-        vial_config: VialConfig::new(VIAL_KEYBOARD_ID, VIAL_KEYBOARD_DEF, unlock_keys),
-        ..Default::default()
-    };
+    let mut rmk_config = RmkConfig::default();
+    rmk_config.device_config.manufacturer = "Embassy HT32";
+    rmk_config.device_config.product_name = "HT32 RMK Integration";
+    rmk_config.device_config.serial_number = "HT32-RMK-60K-0001";
+    let mut usb_transport = UsbTransport::new(driver, rmk_config.device_config);
 
-    // Run the keyboard firmware with full storage and features
-    join3(
-        run_devices! (
-            (matrix) => EVENT_CHANNEL,
-        ),
-        keyboard.run(),
-        run_rmk(&keymap, driver, &mut storage, rmk_config),
-    )
-    .await;
+    // RMK owns matrix and HID semantics. This target is an integration and
+    // resource-budget example for the HT32 USB driver.
+    #[cfg(not(feature = "swd-key-inject"))]
+    run_all!(matrix, keyboard, usb_transport).await;
+
+    #[cfg(feature = "swd-key-inject")]
+    {
+        let mut swd_key_injector = SwdKeyInjector;
+        run_all!(matrix, keyboard, usb_transport, swd_key_injector).await;
+    }
 }

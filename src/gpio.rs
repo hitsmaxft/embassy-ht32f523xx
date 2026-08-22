@@ -85,8 +85,9 @@ macro_rules! gpio_op {
     };
     ($gpio:expr, $pin:expr, set_drive, $drive:expr) => {
         $gpio.drvr().modify(|r, w| {
-            let shift = $pin * 2;
-            let value = (r.bits() & !(0b11 << shift)) | (($drive as u32) << shift);
+            // HT32F52342/52 has one drive-strength bit per pin:
+            // 0 selects 4 mA and 1 selects 8 mA.
+            let value = (r.bits() & !(1 << $pin)) | (($drive as u32) << $pin);
             w.bits(value)
         })
     };
@@ -159,7 +160,11 @@ pub enum Pull {
     Down,
 }
 
-/// GPIO output speed
+/// GPIO output drive strength compatibility setting.
+///
+/// HT32F52342/52 only provides 4 mA and 8 mA settings. `Low` selects
+/// 4 mA; all other variants select 8 mA so code using the conventional
+/// four-level embedded HAL vocabulary remains source compatible.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Speed {
     Low,
@@ -339,18 +344,11 @@ impl embedded_hal_async::digital::Wait for AnyPin {
             return Ok(());
         }
 
-        // Configure EXTI for rising edge
-        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
         crate::exti::configure_exti_source(self.pin, self.port);
-        exti_channel.enable_interrupt(crate::exti::Edge::Rising);
-
-        // Wait for interrupt
-        let interrupt = exti_channel.get_interrupt();
-        let waker = crate::interrupt::get_waker(interrupt);
-        waker.wait().await;
-
-        // Clean up
-        exti_channel.disable_interrupt();
+        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
+        while self.is_low()? {
+            exti_channel.wait_for_edge(crate::exti::Edge::Rising).await;
+        }
         Ok(())
     }
 
@@ -360,66 +358,34 @@ impl embedded_hal_async::digital::Wait for AnyPin {
             return Ok(());
         }
 
-        // Configure EXTI for falling edge
-        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
         crate::exti::configure_exti_source(self.pin, self.port);
-        exti_channel.enable_interrupt(crate::exti::Edge::Falling);
-
-        // Wait for interrupt
-        let interrupt = exti_channel.get_interrupt();
-        let waker = crate::interrupt::get_waker(interrupt);
-        waker.wait().await;
-
-        // Clean up
-        exti_channel.disable_interrupt();
+        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
+        while self.is_high()? {
+            exti_channel.wait_for_edge(crate::exti::Edge::Falling).await;
+        }
         Ok(())
     }
 
     async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
-        // Configure EXTI for rising edge
-        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
         crate::exti::configure_exti_source(self.pin, self.port);
-        exti_channel.enable_interrupt(crate::exti::Edge::Rising);
-
-        // Wait for interrupt
-        let interrupt = exti_channel.get_interrupt();
-        let waker = crate::interrupt::get_waker(interrupt);
-        waker.wait().await;
-
-        // Clean up
-        exti_channel.disable_interrupt();
+        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
+        exti_channel.wait_for_edge(crate::exti::Edge::Rising).await;
         Ok(())
     }
 
     async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
-        // Configure EXTI for falling edge
-        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
         crate::exti::configure_exti_source(self.pin, self.port);
-        exti_channel.enable_interrupt(crate::exti::Edge::Falling);
-
-        // Wait for interrupt
-        let interrupt = exti_channel.get_interrupt();
-        let waker = crate::interrupt::get_waker(interrupt);
-        waker.wait().await;
-
-        // Clean up
-        exti_channel.disable_interrupt();
+        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
+        exti_channel.wait_for_edge(crate::exti::Edge::Falling).await;
         Ok(())
     }
 
     async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
-        // Configure EXTI for both edges
-        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
         crate::exti::configure_exti_source(self.pin, self.port);
-        exti_channel.enable_interrupt(crate::exti::Edge::RisingFalling);
-
-        // Wait for interrupt
-        let interrupt = exti_channel.get_interrupt();
-        let waker = crate::interrupt::get_waker(interrupt);
-        waker.wait().await;
-
-        // Clean up
-        exti_channel.disable_interrupt();
+        let exti_channel = ExtiChannel::new(self.pin).ok_or(GpioError)?;
+        exti_channel
+            .wait_for_edge(crate::exti::Edge::RisingFalling)
+            .await;
         Ok(())
     }
 }
@@ -460,12 +426,10 @@ impl<const PORT: char, const PIN: u8, MODE> Pin<PORT, PIN, MODE> {
         gpio_impl!(PORT, PIN, disable_input);
         gpio_impl!(PORT, PIN, set_push_pull);
 
-        // PxDRVR selects 4, 8, 12, or 16 mA per pin.
+        // PxDRVR selects either 4 mA or 8 mA with one bit per pin.
         let drive = match speed {
             Speed::Low => 0,
-            Speed::Medium => 1,
-            Speed::High => 2,
-            Speed::VeryHigh => 3,
+            Speed::Medium | Speed::High | Speed::VeryHigh => 1,
         };
         gpio_impl!(PORT, PIN, set_drive, drive);
 
@@ -545,8 +509,11 @@ impl<const PORT: char, const PIN: u8> Pin<PORT, PIN, mode::Input> {
 
     /// Wait for external interrupt on this pin
     pub async fn wait_for_interrupt(&self, edge: Edge) {
-        if let Some(exti) = self.enable_interrupt(edge) {
-            exti.wait().await;
+        if PIN <= 15 {
+            crate::exti::configure_exti_source(PIN, PORT);
+            if let Some(exti) = ExtiChannel::new(PIN) {
+                exti.wait_for_edge(edge).await;
+            }
         }
     }
 }

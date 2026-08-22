@@ -3,15 +3,20 @@
 
 use defmt::*;
 use embassy_executor::InterruptExecutor;
-use embassy_ht32f523xx::{self, embassy_time::{Duration, Timer}, pac, usb::{Driver, Config as UsbConfig}};
-use embassy_ht32f523xx as hal;
-use embassy_usb::Builder;
 use embassy_futures::select::{select, Either};
+use embassy_ht32f523xx as hal;
+use embassy_ht32f523xx::{
+    self,
+    embassy_time::{Duration, Timer},
+    pac,
+    usb::{Config as UsbConfig, Driver},
+};
+use embassy_usb::Builder;
 // No USB driver types needed for this test
 
+use cortex_m_rt::entry;
 use defmt_rtt as _;
 use panic_probe as _;
-use cortex_m_rt::entry;
 use static_cell::StaticCell;
 
 // Static interrupt executor for testing
@@ -48,7 +53,7 @@ fn main() -> ! {
 #[embassy_executor::task]
 async fn usb_poll_handler_test(p: embassy_ht32f523xx::Peripherals) {
     info!("🎯 USB_POLL_HANDLER_TEST: Start");
-    
+
     // --- 1. Initialize Driver and Builder ---
     let usb_config = UsbConfig::default();
     let driver = Driver::new(p.usb, usb_config);
@@ -127,7 +132,7 @@ async fn usb_poll_handler_test(p: embassy_ht32f523xx::Peripherals) {
             info!("HINT: If this timeout occurs, the underlying poll() events for BusReset and Setup are still failing.");
         }
     }
-    
+
     info!("✅ TEST_SUCCESS: Triggering breakpoint for successful completion");
     info!("🔍 HOST VERIFY: Run 'cyme --list' to confirm 'EBUSB_230' device appears");
     cortex_m::asm::bkpt();

@@ -22,7 +22,7 @@ static_cell = "2"
 portable-atomic = { version = "1.0", features = ["critical-section"] }
 critical-section = { workspace = true }
 
-embassy-ht32f523xx = { workspace = true, features = ["rt", "usb", "ht32f52352"] }
+embassy-ht32f523xx = { workspace = true, features = ["rt", "usb", "defmt", "ht32f52352"] }
 ht32-bsp = { path = "../../bsp", features = ["rt"] }
 
 # For USB serial CDC-ACM implementation

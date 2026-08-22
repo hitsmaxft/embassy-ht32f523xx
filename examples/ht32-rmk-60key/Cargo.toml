@@ -8,52 +8,42 @@ repository = "https://github.com/haobogu/rmk"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
+[features]
+default = []
+# Test-only SWD mailbox used to inject RMK matrix events without a wired PCB.
+swd-key-inject = [
+    "embassy-ht32f523xx/defmt",
+    "embassy-time/defmt-timestamp-uptime",
+    "dep:defmt",
+    "dep:defmt-rtt",
+    "dep:panic-probe",
+]
+
 [dependencies]
-# RMK configuration for HT32F52352 with 16KB RAM - with vial support
-rmk = { git = "https://github.com/haobogu/rmk", default-features = false, features = ["async_matrix", "storage", "vial"] }
-rmk-types = { git = "https://github.com/haobogu/rmk", default-features = false }
+# Keep the 16 KiB target lean: fixed keymap, no Vial and no persistent storage.
+# Pin both crates to the same reviewed revision for reproducible builds.
+rmk = { git = "https://github.com/haobogu/rmk", rev = "1c1f5888c38b9ef41c23b7810c1f49b48f06e2d3", default-features = false, features = ["async_matrix"] }
+rmk-types = { git = "https://github.com/haobogu/rmk", rev = "1c1f5888c38b9ef41c23b7810c1f49b48f06e2d3", default-features = false }
 cortex-m = { workspace = true, features = ['critical-section-single-core'] }
 cortex-m-rt = { workspace = true }
-# Minimal embassy features - remove defmt to save memory
+# Minimal Embassy features; logging is omitted to preserve RAM and Flash.
 embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-thread"] }
 embassy-time = { workspace = true }
 embassy-ht32f523xx = { workspace = true, features = ["rt", "usb", "ht32f52352"] }
 ht32f523x2 = { workspace = true }
 static_cell = "2"
 portable-atomic = { version = "1.0", features = ["critical-section"] }
-# Remove defmt to save significant memory
-# defmt = { workspace = true }
-# defmt-rtt = { workspace = true }
-embedded-storage = "0.3.1"
 embedded-hal = { workspace = true }
 critical-section = { workspace = true }
-# Use panic-halt instead of panic-probe to save memory
+defmt = { workspace = true, optional = true }
+defmt-rtt = { workspace = true, optional = true }
+panic-probe = { workspace = true, optional = true, features = ["print-defmt"] }
+# Use panic-halt instead of panic-probe to save memory.
 panic-halt = "1.0"
 
-
-[build-dependencies]
-xz2 = "0.1.7"
-json = "0.12"
-const-gen = "1.6"
 
 [[bin]]
 name = "rmk-ht32-60key"
 path = "src/main.rs"
 test = false
 bench = false
-
-[profile.dev]
-codegen-units = 1
-debug = false
-opt-level = "z"
-overflow-checks = false
-lto = "thin"
-panic = 'abort'
-
-[profile.release]
-codegen-units = 1
-debug = false
-opt-level = "z"
-overflow-checks = false
-lto = "fat"
-panic = 'abort'
